@@ -49,11 +49,13 @@ class HoldingCreate(BaseModel):
     shares: float
     avg_price: float
     portfolio_id: str
+    currency: str = "USD"
 
 class HoldingUpdate(BaseModel):
     symbol: Optional[str] = None
     shares: Optional[float] = None
     avg_price: Optional[float] = None
+    currency: Optional[str] = None
 
 class HoldingResponse(BaseModel):
     id: str
@@ -61,23 +63,30 @@ class HoldingResponse(BaseModel):
     shares: float
     avg_price: float
     portfolio_id: str
+    currency: str
     created_at: str
     updated_at: str
 
 # ── Seed Data ───────────────────────────────────────────
 
 SEED_HOLDINGS = [
-    {"symbol": "AAPL", "shares": 65, "avg_price": 105.88},
-    {"symbol": "QQQ", "shares": 75, "avg_price": 371.92},
-    {"symbol": "TSLA", "shares": 100, "avg_price": 161.64},
-    {"symbol": "MSFT", "shares": 25, "avg_price": 329.72},
-    {"symbol": "GOOGL", "shares": 60, "avg_price": 130.33},
-    {"symbol": "CRWD", "shares": 15, "avg_price": 106.51},
-    {"symbol": "SOXQ", "shares": 180, "avg_price": 27.53},
+    {"symbol": "AAPL", "shares": 65, "avg_price": 105.88, "currency": "USD"},
+    {"symbol": "QQQ", "shares": 75, "avg_price": 371.92, "currency": "USD"},
+    {"symbol": "TSLA", "shares": 100, "avg_price": 161.64, "currency": "USD"},
+    {"symbol": "MSFT", "shares": 25, "avg_price": 329.72, "currency": "USD"},
+    {"symbol": "GOOGL", "shares": 60, "avg_price": 130.33, "currency": "USD"},
+    {"symbol": "CRWD", "shares": 15, "avg_price": 106.51, "currency": "USD"},
+    {"symbol": "SOXQ", "shares": 180, "avg_price": 27.53, "currency": "USD"},
 ]
 
 @app.on_event("startup")
 async def seed_data():
+    # Migrate: add currency field to any holdings that don't have it
+    await db.holdings.update_many(
+        {"currency": {"$exists": False}},
+        {"$set": {"currency": "USD"}}
+    )
+    
     portfolio_count = await db.portfolios.count_documents({})
     if portfolio_count == 0:
         logger.info("Seeding initial data...")
@@ -94,6 +103,7 @@ async def seed_data():
                 "symbol": h["symbol"],
                 "shares": h["shares"],
                 "avg_price": h["avg_price"],
+                "currency": h.get("currency", "USD"),
                 "portfolio_id": default_id,
                 "created_at": now,
                 "updated_at": now,
@@ -161,6 +171,7 @@ async def create_holding(data: HoldingCreate):
         "symbol": data.symbol.upper().strip(),
         "shares": data.shares,
         "avg_price": data.avg_price,
+        "currency": data.currency.upper().strip(),
         "portfolio_id": data.portfolio_id,
         "created_at": now,
         "updated_at": now,
@@ -181,6 +192,8 @@ async def update_holding(holding_id: str, data: HoldingUpdate):
         update_fields["shares"] = data.shares
     if data.avg_price is not None:
         update_fields["avg_price"] = data.avg_price
+    if data.currency is not None:
+        update_fields["currency"] = data.currency.upper().strip()
     await db.holdings.update_one({"id": holding_id}, {"$set": update_fields})
     updated = await db.holdings.find_one({"id": holding_id}, {"_id": 0})
     return updated
@@ -239,6 +252,7 @@ async def import_csv(portfolio_id: str = Form(...), file: UploadFile = File(...)
             "symbol": symbol,
             "shares": shares,
             "avg_price": avg_price,
+            "currency": (row.get("currency") or "USD").strip().upper(),
             "portfolio_id": portfolio_id,
             "created_at": now,
             "updated_at": now,
@@ -266,6 +280,7 @@ Return ONLY a valid JSON array. Each item must have:
 - "symbol": stock ticker (e.g. "AAPL", "QQQ") - uppercase, 1-5 letters
 - "shares": number of shares (float)
 - "avg_price": average cost per share or book cost per share (float, 0 if not found)
+- "currency": the currency of the holding prices - "USD", "CAD", or "INR" (detect from context like CAD $, ₹, Rs, $, etc. Default to "USD" if unclear)
 
 Rules:
 - Only include actual stock/ETF ticker symbols (not cash, currency codes like USD/CAD, or section headers)
@@ -304,8 +319,11 @@ Rules:
             sym = str(item.get("symbol", "")).strip().upper()
             shares = float(item.get("shares", 0))
             avg_price = float(item.get("avg_price", 0))
+            currency = str(item.get("currency", "USD")).strip().upper()
+            if currency not in ("USD", "CAD", "INR"):
+                currency = "USD"
             if sym and shares > 0 and len(sym) <= 5 and sym.isalpha():
-                results.append({"symbol": sym, "shares": shares, "avg_price": avg_price})
+                results.append({"symbol": sym, "shares": shares, "avg_price": avg_price, "currency": currency})
         return results
     except Exception as e:
         logger.error(f"AI parsing error: {e}")
@@ -357,6 +375,7 @@ async def import_pdf(portfolio_id: str = Form(...), file: UploadFile = File(...)
             "symbol": h["symbol"],
             "shares": h["shares"],
             "avg_price": h["avg_price"],
+            "currency": h.get("currency", "USD"),
             "portfolio_id": portfolio_id,
             "created_at": now,
             "updated_at": now,
@@ -368,6 +387,23 @@ async def import_pdf(portfolio_id: str = Form(...), file: UploadFile = File(...)
     return {"imported_count": len(imported), "holdings": imported}
 
 # ── Stock Quotes ────────────────────────────────────────
+
+@api_router.get("/fx-rates")
+async def get_fx_rates():
+    """Fetch live FX rates for USD/CAD, USD/INR using yfinance."""
+    rates = {"USD": 1.0}
+    pairs = {"CAD": "USDCAD=X", "INR": "USDINR=X"}
+    for currency, symbol in pairs.items():
+        try:
+            ticker = yf.Ticker(symbol)
+            info = ticker.fast_info
+            rate = float(info.last_price) if hasattr(info, 'last_price') and info.last_price else 0
+            rates[currency] = round(rate, 4)
+        except Exception as e:
+            logger.warning(f"Error fetching FX rate {symbol}: {e}")
+            # Fallback rates
+            rates[currency] = 1.44 if currency == "CAD" else 84.5
+    return rates
 
 @api_router.get("/stocks/quotes")
 async def get_stock_quotes(symbols: str):

@@ -33,6 +33,7 @@ export default function AddHolding() {
   const [symbol, setSymbol] = useState(editSymbol || '');
   const [shares, setShares] = useState(editShares || '');
   const [avgPrice, setAvgPrice] = useState(editAvgPrice || '');
+  const [currency, setCurrency] = useState('USD');
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
@@ -52,7 +53,7 @@ export default function AddHolding() {
         await fetch(`${API_URL}/api/holdings`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ symbol: symbol.trim().toUpperCase(), shares: parseFloat(shares), avg_price: parseFloat(avgPrice), portfolio_id: portfolioId }),
+          body: JSON.stringify({ symbol: symbol.trim().toUpperCase(), shares: parseFloat(shares), avg_price: parseFloat(avgPrice), portfolio_id: portfolioId, currency }),
         });
       }
       router.back();
@@ -90,6 +91,18 @@ export default function AddHolding() {
                 <Text style={styles.fieldLabel}>Average Price per Share</Text>
                 <TextInput testID="avg-price-input" style={styles.input} value={avgPrice} onChangeText={setAvgPrice} placeholder="e.g. 150.00" placeholderTextColor="#3F3F46" keyboardType="decimal-pad" />
               </View>
+              {!isEditing && (
+                <View style={styles.fieldGroup}>
+                  <Text style={styles.fieldLabel}>Currency</Text>
+                  <View style={styles.currRow}>
+                    {['USD', 'CAD', 'INR'].map((c) => (
+                      <TouchableOpacity key={c} testID={`currency-btn-${c}`} style={[styles.currBtn, currency === c && styles.currBtnActive]} onPress={() => setCurrency(c)} activeOpacity={0.7}>
+                        <Text style={[styles.currBtnText, currency === c && styles.currBtnTextActive]}>{c === 'USD' ? '$ USD' : c === 'CAD' ? 'C$ CAD' : '₹ INR'}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              )}
             </View>
 
             <TouchableOpacity testID="save-holding-btn" style={[styles.saveBtn, saving && styles.saveBtnDisabled]} activeOpacity={0.7} onPress={handleSave} disabled={saving}>
@@ -116,4 +129,9 @@ const styles = StyleSheet.create({
   saveBtn: { height: 56, borderRadius: 100, backgroundColor: '#FAFAFA', alignItems: 'center', justifyContent: 'center', marginTop: 40 },
   saveBtnDisabled: { opacity: 0.5 },
   saveBtnText: { fontSize: 16, fontWeight: '700', color: '#09090B' },
+  currRow: { flexDirection: 'row', gap: 10 },
+  currBtn: { flex: 1, height: 48, borderRadius: 12, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#27272A', alignItems: 'center', justifyContent: 'center' },
+  currBtnActive: { backgroundColor: '#6366F1', borderColor: '#6366F1' },
+  currBtnText: { fontSize: 14, fontWeight: '600', color: '#52525B' },
+  currBtnTextActive: { color: '#FAFAFA' },
 });

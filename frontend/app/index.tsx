@@ -16,24 +16,13 @@ import { Feather } from '@expo/vector-icons';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
-interface Portfolio {
-  id: string;
-  name: string;
-  created_at: string;
-}
+const CURRENCIES = ['USD', 'CAD', 'INR'] as const;
+type CurrencyCode = (typeof CURRENCIES)[number];
+const CURRENCY_SYMBOLS: Record<CurrencyCode, string> = { USD: '$', CAD: 'C$', INR: '₹' };
 
-interface Holding {
-  id: string;
-  symbol: string;
-  shares: number;
-  avg_price: number;
-  portfolio_id: string;
-}
-
-interface Quote {
-  price: number;
-  previous_close: number;
-}
+interface Portfolio { id: string; name: string; }
+interface Holding { id: string; symbol: string; shares: number; avg_price: number; portfolio_id: string; currency: string; }
+interface Quote { price: number; previous_close: number; }
 
 export default function Dashboard() {
   const router = useRouter();
@@ -41,81 +30,77 @@ export default function Dashboard() {
   const [selectedPortfolio, setSelectedPortfolio] = useState<string>('all');
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [quotes, setQuotes] = useState<Record<string, Quote>>({});
+  const [fxRates, setFxRates] = useState<Record<string, number>>({ USD: 1, CAD: 1.36, INR: 84.5 });
+  const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>('USD');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const fetchPortfolios = useCallback(async () => {
     try {
       const res = await fetch(`${API_URL}/api/portfolios`);
-      const data: Portfolio[] = await res.json();
-      setPortfolios(data);
-    } catch (err) {
-      console.error('Error fetching portfolios:', err);
-    }
+      setPortfolios(await res.json());
+    } catch (err) { console.error(err); }
+  }, []);
+
+  const fetchFxRates = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/fx-rates`);
+      setFxRates(await res.json());
+    } catch (err) { console.error(err); }
   }, []);
 
   const fetchData = useCallback(async () => {
     try {
-      const url = selectedPortfolio === 'all'
-        ? `${API_URL}/api/holdings`
-        : `${API_URL}/api/holdings?portfolio_id=${selectedPortfolio}`;
+      const url = selectedPortfolio === 'all' ? `${API_URL}/api/holdings` : `${API_URL}/api/holdings?portfolio_id=${selectedPortfolio}`;
       const holdingsRes = await fetch(url);
       const holdingsData: Holding[] = await holdingsRes.json();
       setHoldings(holdingsData);
-
       if (holdingsData.length > 0) {
-        const uniqueSymbols = [...new Set(holdingsData.map((h) => h.symbol))];
-        const symbols = uniqueSymbols.join(',');
+        const symbols = [...new Set(holdingsData.map((h) => h.symbol))].join(',');
         const quotesRes = await fetch(`${API_URL}/api/stocks/quotes?symbols=${symbols}`);
-        const quotesData = await quotesRes.json();
-        setQuotes(quotesData);
-      } else {
-        setQuotes({});
-      }
-    } catch (err) {
-      console.error('Error fetching data:', err);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+        setQuotes(await quotesRes.json());
+      } else { setQuotes({}); }
+    } catch (err) { console.error(err); }
+    finally { setLoading(false); setRefreshing(false); }
   }, [selectedPortfolio]);
 
-  useEffect(() => {
-    fetchPortfolios();
-  }, [fetchPortfolios]);
+  useEffect(() => { fetchPortfolios(); fetchFxRates(); }, []);
+  useEffect(() => { setLoading(true); fetchData(); const i = setInterval(fetchData, 60000); return () => clearInterval(i); }, [fetchData]);
 
-  useEffect(() => {
-    setLoading(true);
-    fetchData();
-    const interval = setInterval(fetchData, 60000);
-    return () => clearInterval(interval);
-  }, [fetchData]);
+  const onRefresh = () => { setRefreshing(true); fetchPortfolios(); fetchFxRates(); fetchData(); };
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    fetchPortfolios();
-    fetchData();
+  // Convert value from native currency to display currency
+  const convert = (amount: number, fromCurrency: string): number => {
+    const from = fromCurrency.toUpperCase();
+    const to = displayCurrency;
+    if (from === to) return amount;
+    // Convert to USD first, then to target
+    const usdAmount = from === 'USD' ? amount : amount / (fxRates[from] || 1);
+    return to === 'USD' ? usdAmount : usdAmount * (fxRates[to] || 1);
   };
 
-  const getTotalValue = () =>
-    holdings.reduce((sum, h) => sum + (quotes[h.symbol]?.price || 0) * h.shares, 0);
-
-  const getTotalCost = () =>
-    holdings.reduce((sum, h) => sum + h.avg_price * h.shares, 0);
-
-  const getTotalDayChange = () =>
-    holdings.reduce((sum, h) => {
-      const q = quotes[h.symbol];
-      return q ? sum + (q.price - q.previous_close) * h.shares : sum;
-    }, 0);
+  const cs = CURRENCY_SYMBOLS[displayCurrency];
 
   const formatCurrency = (val: number) => {
-    if (Math.abs(val) >= 1000000) return `$${(val / 1000000).toFixed(2)}m`;
-    if (Math.abs(val) >= 1000) return `$${(val / 1000).toFixed(1)}k`;
-    return `$${val.toFixed(2)}`;
+    const abs = Math.abs(val);
+    if (abs >= 1000000) return `${cs}${(val / 1000000).toFixed(2)}m`;
+    if (abs >= 1000) return `${cs}${(val / 1000).toFixed(1)}k`;
+    return `${cs}${val.toFixed(2)}`;
   };
-
   const formatPct = (val: number) => `${val >= 0 ? '+' : ''}${val.toFixed(2)}%`;
+
+  const getTotalValue = () => holdings.reduce((sum, h) => {
+    const price = quotes[h.symbol]?.price || 0;
+    // stock prices from yfinance are in USD, so convert from USD
+    return sum + convert(price * h.shares, 'USD');
+  }, 0);
+
+  const getTotalCost = () => holdings.reduce((sum, h) => sum + convert(h.avg_price * h.shares, h.currency || 'USD'), 0);
+
+  const getTotalDayChange = () => holdings.reduce((sum, h) => {
+    const q = quotes[h.symbol];
+    return q ? sum + convert((q.price - q.previous_close) * h.shares, 'USD') : sum;
+  }, 0);
 
   const totalValue = getTotalValue();
   const totalCost = getTotalCost();
@@ -130,8 +115,12 @@ export default function Dashboard() {
     const q = quotes[item.symbol];
     const price = q?.price || 0;
     const prevClose = q?.previous_close || 0;
-    const currentValue = price * item.shares;
-    const costBasis = item.avg_price * item.shares;
+    const nativeCur = (item.currency || 'USD').toUpperCase() as CurrencyCode;
+    const nativeCs = CURRENCY_SYMBOLS[nativeCur] || '$';
+
+    // Convert to display currency for totals
+    const currentValue = convert(price * item.shares, 'USD');
+    const costBasis = convert(item.avg_price * item.shares, nativeCur);
     const gain = currentValue - costBasis;
     const gainPct = costBasis > 0 ? (gain / costBasis) * 100 : 0;
     const dayChgPct = prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : 0;
@@ -139,20 +128,14 @@ export default function Dashboard() {
     const isDayPositive = dayChgPct >= 0;
 
     return (
-      <TouchableOpacity
-        testID={`holding-card-${item.symbol}`}
-        style={styles.holdingCard}
-        activeOpacity={0.7}
-        onPress={() =>
-          router.push({
-            pathname: '/stock/[symbol]',
-            params: { symbol: item.symbol, holdingId: item.id, portfolioId: item.portfolio_id },
-          })
-        }
-      >
+      <TouchableOpacity testID={`holding-card-${item.symbol}`} style={styles.holdingCard} activeOpacity={0.7}
+        onPress={() => router.push({ pathname: '/stock/[symbol]', params: { symbol: item.symbol, holdingId: item.id, portfolioId: item.portfolio_id } })}>
         <View style={styles.holdingTop}>
           <View style={styles.holdingLeft}>
-            <Text style={styles.symbolText}>{item.symbol}</Text>
+            <View style={styles.symbolRow}>
+              <Text style={styles.symbolText}>{item.symbol}</Text>
+              {nativeCur !== 'USD' && <View style={styles.currBadge}><Text style={styles.currBadgeText}>{nativeCur}</Text></View>}
+            </View>
             <Text style={styles.sharesText}>
               {item.shares} shares{selectedPortfolio === 'all' ? ` · ${getPortfolioName(item.portfolio_id)}` : ''}
             </Text>
@@ -172,7 +155,7 @@ export default function Dashboard() {
           </View>
           <View style={styles.metricCol}>
             <Text style={styles.metricLabel}>Avg Cost</Text>
-            <Text style={styles.metricValue}>${item.avg_price.toFixed(2)}</Text>
+            <Text style={styles.metricValue}>{nativeCs}{item.avg_price.toFixed(2)}</Text>
           </View>
           <View style={styles.metricCol}>
             <Text style={styles.metricLabel}>Total G/L</Text>
@@ -200,11 +183,7 @@ export default function Dashboard() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <FlatList
-        testID="holdings-list"
-        data={holdings}
-        keyExtractor={(item) => item.id}
-        renderItem={renderHolding}
+      <FlatList testID="holdings-list" data={holdings} keyExtractor={(item) => item.id} renderItem={renderHolding}
         contentContainerStyle={styles.listContent}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#6366F1" />}
         ListHeaderComponent={
@@ -227,22 +206,11 @@ export default function Dashboard() {
 
             {/* Portfolio Tabs */}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabScroll} contentContainerStyle={styles.tabContainer}>
-              <TouchableOpacity
-                testID="tab-all"
-                style={[styles.tab, selectedPortfolio === 'all' && styles.tabActive]}
-                onPress={() => setSelectedPortfolio('all')}
-                activeOpacity={0.7}
-              >
+              <TouchableOpacity testID="tab-all" style={[styles.tab, selectedPortfolio === 'all' && styles.tabActive]} onPress={() => setSelectedPortfolio('all')} activeOpacity={0.7}>
                 <Text style={[styles.tabText, selectedPortfolio === 'all' && styles.tabTextActive]}>All</Text>
               </TouchableOpacity>
               {portfolios.map((p) => (
-                <TouchableOpacity
-                  key={p.id}
-                  testID={`tab-${p.id}`}
-                  style={[styles.tab, selectedPortfolio === p.id && styles.tabActive]}
-                  onPress={() => setSelectedPortfolio(p.id)}
-                  activeOpacity={0.7}
-                >
+                <TouchableOpacity key={p.id} testID={`tab-${p.id}`} style={[styles.tab, selectedPortfolio === p.id && styles.tabActive]} onPress={() => setSelectedPortfolio(p.id)} activeOpacity={0.7}>
                   <Text style={[styles.tabText, selectedPortfolio === p.id && styles.tabTextActive]}>{p.name}</Text>
                 </TouchableOpacity>
               ))}
@@ -250,9 +218,21 @@ export default function Dashboard() {
 
             {/* Summary Card */}
             <View style={styles.summaryCard}>
-              <Text style={styles.summaryLabel}>
-                {selectedPortfolio === 'all' ? 'Total Value' : portfolios.find((p) => p.id === selectedPortfolio)?.name || 'Portfolio'}
-              </Text>
+              <View style={styles.summaryHeader}>
+                <Text style={styles.summaryLabel}>
+                  {selectedPortfolio === 'all' ? 'Total Value' : portfolios.find((p) => p.id === selectedPortfolio)?.name || 'Portfolio'}
+                </Text>
+                {/* Currency Toggle */}
+                <View style={styles.currToggle}>
+                  {CURRENCIES.map((c) => (
+                    <TouchableOpacity key={c} testID={`currency-toggle-${c}`}
+                      style={[styles.currToggleBtn, displayCurrency === c && styles.currToggleBtnActive]}
+                      onPress={() => setDisplayCurrency(c)} activeOpacity={0.7}>
+                      <Text style={[styles.currToggleText, displayCurrency === c && styles.currToggleTextActive]}>{c}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
               <Text style={styles.summaryValue}>{formatCurrency(totalValue)}</Text>
               <View style={styles.summaryRow}>
                 <View style={styles.summaryChip}>
@@ -281,21 +261,13 @@ export default function Dashboard() {
           <View style={styles.emptyState}>
             <Feather name="inbox" size={48} color="#3F3F46" />
             <Text style={styles.emptyText}>No holdings yet</Text>
-            <Text style={styles.emptySubtext}>Tap + to add or import from CSV</Text>
+            <Text style={styles.emptySubtext}>Tap + to add or import from CSV/PDF</Text>
           </View>
         }
       />
-
-      {/* FAB Add */}
-      <TouchableOpacity
-        testID="add-holding-btn"
-        style={styles.fab}
-        activeOpacity={0.7}
-        onPress={() => {
-          const pid = selectedPortfolio === 'all' ? (portfolios[0]?.id || '') : selectedPortfolio;
-          router.push({ pathname: '/add-holding', params: { portfolioId: pid } });
-        }}
-      >
+      {/* FAB */}
+      <TouchableOpacity testID="add-holding-btn" style={styles.fab} activeOpacity={0.7}
+        onPress={() => { const pid = selectedPortfolio === 'all' ? (portfolios[0]?.id || '') : selectedPortfolio; router.push({ pathname: '/add-holding', params: { portfolioId: pid } }); }}>
         <Feather name="plus" size={28} color="#09090B" />
       </TouchableOpacity>
     </SafeAreaView>
@@ -320,7 +292,13 @@ const styles = StyleSheet.create({
   tabText: { fontSize: 14, fontWeight: '600', color: '#52525B' },
   tabTextActive: { color: '#FAFAFA' },
   summaryCard: { backgroundColor: '#18181B', borderRadius: 16, borderWidth: 1, borderColor: '#27272A', padding: 20, marginBottom: 24 },
-  summaryLabel: { fontSize: 14, color: '#A1A1AA', marginBottom: 4 },
+  summaryHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  summaryLabel: { fontSize: 14, color: '#A1A1AA' },
+  currToggle: { flexDirection: 'row', backgroundColor: '#09090B', borderRadius: 8, padding: 2 },
+  currToggleBtn: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
+  currToggleBtnActive: { backgroundColor: '#6366F1' },
+  currToggleText: { fontSize: 12, fontWeight: '700', color: '#52525B' },
+  currToggleTextActive: { color: '#FAFAFA' },
   summaryValue: { fontSize: 36, fontWeight: '700', color: '#FAFAFA', fontFamily: MONO, marginBottom: 16 },
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between' },
   summaryChip: { flexDirection: 'row', alignItems: 'center' },
@@ -333,7 +311,10 @@ const styles = StyleSheet.create({
   holdingTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 },
   holdingLeft: {},
   holdingRight: { alignItems: 'flex-end' },
+  symbolRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   symbolText: { fontSize: 18, fontWeight: '700', color: '#FAFAFA', marginBottom: 2 },
+  currBadge: { backgroundColor: '#27272A', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  currBadgeText: { fontSize: 10, fontWeight: '700', color: '#A1A1AA' },
   sharesText: { fontSize: 13, color: '#52525B' },
   priceText: { fontSize: 18, fontWeight: '600', color: '#FAFAFA', fontFamily: MONO, marginBottom: 4 },
   changeBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, gap: 4 },
