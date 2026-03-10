@@ -151,10 +151,10 @@ export default function ImportFile() {
           <View style={styles.infoCard}>
             <Feather name="info" size={20} color="#A78BFA" />
             <View style={styles.infoContent}>
-              <Text style={styles.infoTitle}>PDF Statement Parsing</Text>
-              <Text style={styles.infoText}>Upload brokerage account statements or position reports.</Text>
-              <Text style={styles.infoText}>The app will auto-detect tables with stock symbols, shares, and prices.</Text>
-              <Text style={[styles.infoText, { color: '#FACC15', marginTop: 6 }]}>Works best with statements that have clearly formatted tables.</Text>
+              <Text style={styles.infoTitle}>AI-Powered PDF Parsing</Text>
+              <Text style={styles.infoText}>Upload any brokerage statement — our AI reads and extracts holdings automatically.</Text>
+              <Text style={styles.infoText}>Works with any format: Wealthsimple, Fidelity, Schwab, Questrade, and more.</Text>
+              <Text style={[styles.infoText, { color: '#4ADE80', marginTop: 6 }]}>Powered by GPT — handles messy tables, currency formats, and non-standard layouts.</Text>
             </View>
           </View>
         )}

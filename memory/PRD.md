@@ -44,7 +44,7 @@ A dark-themed iOS portfolio tracking app with multi-portfolio support, CSV impor
 - `PUT /api/holdings/{id}` - Update holding
 - `DELETE /api/holdings/{id}` - Delete holding
 - `POST /api/holdings/import-csv` - Import from CSV file
-- `POST /api/holdings/import-pdf` - Import from PDF statement (pdfplumber)
+- `POST /api/holdings/import-pdf` - Import from PDF statement (AI-powered via GPT-5.2)
 
 ### Stocks
 - `GET /api/stocks/quotes?symbols=AAPL,TSLA` - Live quotes

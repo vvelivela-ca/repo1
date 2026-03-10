@@ -14,6 +14,8 @@ import csv
 import io
 import re
 import pdfplumber
+import json as json_module
+from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -247,104 +249,67 @@ async def import_csv(portfolio_id: str = Form(...), file: UploadFile = File(...)
 
     return {"imported_count": len(imported), "holdings": imported}
 
-# ── PDF Import ──────────────────────────────────────────
+# ── PDF Import (AI-Powered) ─────────────────────────────
 
-def _clean_number(s: str) -> str:
-    """Strip currency symbols, commas, whitespace from a numeric string."""
-    return re.sub(r'[^0-9.\-]', '', s.strip()) if s else ''
+async def _ai_parse_holdings(text: str) -> list:
+    """Use GPT to intelligently extract holdings from any PDF text format."""
+    api_key = os.environ.get('EMERGENT_LLM_KEY')
+    if not api_key:
+        return []
 
-def _is_likely_ticker(s: str) -> bool:
-    """Check if string looks like a stock ticker (1-5 uppercase letters)."""
-    cleaned = s.strip().upper()
-    return bool(re.match(r'^[A-Z]{1,5}$', cleaned))
+    chat = LlmChat(
+        api_key=api_key,
+        session_id=f"pdf-parse-{uuid.uuid4()}",
+        system_message="""You are a financial document parser. Extract stock/ETF holdings from brokerage statements.
 
-def _extract_holdings_from_tables(tables: list) -> list:
-    """Extract holdings from PDF tables by finding symbol/shares/price columns."""
-    results = []
-    for table in tables:
-        if not table or len(table) < 2:
-            continue
-        # Find header row - look for column names
-        header_row = None
-        header_idx = -1
-        for i, row in enumerate(table):
-            row_lower = [str(c).strip().lower() if c else '' for c in row]
-            row_text = ' '.join(row_lower)
-            if any(kw in row_text for kw in ['symbol', 'ticker', 'stock', 'security', 'holding', 'name']):
-                header_row = row_lower
-                header_idx = i
-                break
+Return ONLY a valid JSON array. Each item must have:
+- "symbol": stock ticker (e.g. "AAPL", "QQQ") - uppercase, 1-5 letters
+- "shares": number of shares (float)
+- "avg_price": average cost per share or book cost per share (float, 0 if not found)
 
-        if header_row:
-            # Map columns
-            sym_col = price_col = shares_col = None
-            for j, h in enumerate(header_row):
-                h = h.strip()
-                if h in ('symbol', 'ticker', 'stock', 'security'):
-                    sym_col = j
-                elif any(k in h for k in ('share', 'quantity', 'qty', 'units')):
-                    shares_col = j
-                elif any(k in h for k in ('avg', 'cost', 'price', 'book', 'average')):
-                    price_col = j
+Rules:
+- Only include actual stock/ETF ticker symbols (not cash, currency codes like USD/CAD, or section headers)
+- If you see "quantity" or "units", that's the shares count
+- If you see "book cost per share", "avg cost", "average price", or "cost basis per share", that's the avg_price
+- If only total cost is shown (not per-share), divide by shares to get avg_price
+- Ignore subtotals, totals, and summary rows
+- If no holdings found, return empty array []
+- Return ONLY the JSON array, nothing else"""
+    ).with_model("openai", "gpt-5.2")
 
-            if sym_col is not None and shares_col is not None:
-                for row in table[header_idx + 1:]:
-                    if len(row) <= max(filter(None, [sym_col, shares_col, price_col or 0])):
-                        continue
-                    sym = str(row[sym_col] or '').strip().upper()
-                    if not _is_likely_ticker(sym):
-                        continue
-                    shares_str = _clean_number(str(row[shares_col] or ''))
-                    price_str = _clean_number(str(row[price_col] or '')) if price_col is not None else ''
-                    try:
-                        shares = float(shares_str) if shares_str else 0
-                        avg_price = float(price_str) if price_str else 0
-                    except ValueError:
-                        continue
-                    if shares > 0:
-                        results.append({"symbol": sym, "shares": shares, "avg_price": avg_price})
-        else:
-            # No header found — try heuristic: look for rows with a ticker-like cell
-            for row in table:
-                if not row or len(row) < 2:
-                    continue
-                ticker = None
-                numbers = []
-                for cell in row:
-                    cell_str = str(cell or '').strip()
-                    if not ticker and _is_likely_ticker(cell_str):
-                        ticker = cell_str.upper()
-                    else:
-                        num = _clean_number(cell_str)
-                        if num:
-                            try:
-                                numbers.append(float(num))
-                            except ValueError:
-                                pass
-                if ticker and len(numbers) >= 1:
-                    shares = numbers[0]
-                    avg_price = numbers[1] if len(numbers) >= 2 else 0
-                    if shares > 0:
-                        results.append({"symbol": ticker, "shares": shares, "avg_price": avg_price})
-    return results
+    try:
+        # Truncate to avoid token limits
+        truncated_text = text[:8000] if len(text) > 8000 else text
+        user_msg = UserMessage(
+            text=f"Extract all stock/ETF holdings from this brokerage statement:\n\n{truncated_text}"
+        )
+        response = await chat.send_message(user_msg)
 
-def _extract_holdings_from_text(text: str) -> list:
-    """Fallback: extract holdings from raw PDF text using regex patterns."""
-    results = []
-    # Common patterns: TICKER  123  $45.67
-    pattern = r'\b([A-Z]{1,5})\b\s+(\d[\d,]*\.?\d*)\s+\$?([\d,]+\.?\d*)'
-    for match in re.finditer(pattern, text):
-        sym = match.group(1)
-        shares_str = match.group(2).replace(',', '')
-        price_str = match.group(3).replace(',', '')
-        try:
-            shares = float(shares_str)
-            avg_price = float(price_str)
-            if shares > 0 and sym not in ('USD', 'CAD', 'GBP', 'EUR', 'ETF', 'NYSE', 'TSX', 'CASH'):
+        # Parse JSON from response
+        response_text = response.strip()
+        # Handle markdown code blocks
+        if response_text.startswith("```"):
+            response_text = response_text.split("```")[1]
+            if response_text.startswith("json"):
+                response_text = response_text[4:]
+            response_text = response_text.strip()
+
+        parsed = json_module.loads(response_text)
+        if not isinstance(parsed, list):
+            return []
+
+        # Validate each entry
+        results = []
+        for item in parsed:
+            sym = str(item.get("symbol", "")).strip().upper()
+            shares = float(item.get("shares", 0))
+            avg_price = float(item.get("avg_price", 0))
+            if sym and shares > 0 and len(sym) <= 5 and sym.isalpha():
                 results.append({"symbol": sym, "shares": shares, "avg_price": avg_price})
-        except ValueError:
-            continue
-    return results
+        return results
+    except Exception as e:
+        logger.error(f"AI parsing error: {e}")
+        return []
 
 @api_router.post("/holdings/import-pdf")
 async def import_pdf(portfolio_id: str = Form(...), file: UploadFile = File(...)):
@@ -359,28 +324,29 @@ async def import_pdf(portfolio_id: str = Form(...), file: UploadFile = File(...)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read PDF: {str(e)}")
 
-    all_tables = []
     all_text = ""
     for page in pdf.pages:
-        tables = page.extract_tables()
-        if tables:
-            all_tables.extend(tables)
         page_text = page.extract_text()
         if page_text:
             all_text += page_text + "\n"
     pdf.close()
 
-    # Try table extraction first, fall back to text regex
-    parsed = _extract_holdings_from_tables(all_tables)
-    if not parsed:
-        parsed = _extract_holdings_from_text(all_text)
+    if not all_text.strip():
+        return {
+            "imported_count": 0,
+            "holdings": [],
+            "message": "Could not extract text from PDF. The file may be image-based or encrypted."
+        }
+
+    # Use AI to parse holdings from any format
+    parsed = await _ai_parse_holdings(all_text)
 
     if not parsed:
         return {
             "imported_count": 0,
             "holdings": [],
-            "raw_text_preview": all_text[:500] if all_text else "No text extracted",
-            "message": "Could not auto-detect holdings. Try CSV format or add manually."
+            "raw_text_preview": all_text[:500],
+            "message": "AI could not detect holdings in this document. Try CSV format or add manually."
         }
 
     imported = []
