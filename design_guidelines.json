@@ -1,0 +1,139 @@
+{
+  "identity": "E1: The Anti-AI Designer",
+  "theme_strategy": {
+    "name": "The Performance Pro (Dark Mode Finance)",
+    "description": "A high-precision, tactical financial interface. Deep obsidian backgrounds, razor-sharp borders, and neon data accents. Trust through clarity.",
+    "emotional_tone": "Wealth, Precision, Control, Privacy",
+    "mode": "dark"
+  },
+  "colors": {
+    "background": {
+      "primary": "#09090B",
+      "secondary": "#18181B",
+      "tertiary": "#27272A"
+    },
+    "text": {
+      "primary": "#FAFAFA",
+      "secondary": "#A1A1AA",
+      "tertiary": "#52525B",
+      "inverse": "#09090B"
+    },
+    "border": {
+      "subtle": "#27272A",
+      "active": "#3F3F46"
+    },
+    "functional": {
+      "success": "#4ADE80",
+      "success_bg": "rgba(74, 222, 128, 0.1)",
+      "error": "#F87171",
+      "error_bg": "rgba(248, 113, 113, 0.1)",
+      "warning": "#FACC15",
+      "info": "#60A5FA",
+      "brand": "#6366F1",
+      "brand_glow": "rgba(99, 102, 241, 0.5)"
+    }
+  },
+  "typography": {
+    "font_family": {
+      "headings": "System",
+      "body": "System",
+      "mono": "Platform.select({ ios: 'Menlo', android: 'monospace' })"
+    },
+    "sizes": {
+      "h1": 32,
+      "h2": 24,
+      "h3": 20,
+      "body_lg": 18,
+      "body_md": 16,
+      "body_sm": 14,
+      "caption": 12
+    },
+    "weights": {
+      "bold": "700",
+      "semibold": "600",
+      "regular": "400"
+    }
+  },
+  "spacing": {
+    "xs": 4,
+    "sm": 8,
+    "md": 16,
+    "lg": 24,
+    "xl": 32,
+    "xxl": 48,
+    "layout_padding": 20,
+    "card_padding": 16
+  },
+  "layout_rules": {
+    "safe_area": "Always wrap main screens in SafeAreaView or use useSafeAreaInsets",
+    "containers": "Use standard View with paddingHorizontal: 20 for main content",
+    "cards": "borderWidth: 1, borderColor: colors.border.subtle, borderRadius: 16, backgroundColor: colors.background.secondary",
+    "lists": "Use FlatList with contentContainerStyle={{ paddingBottom: 100 }} to avoid tab bar overlap"
+  },
+  "components": {
+    "buttons": {
+      "primary": {
+        "height": 56,
+        "borderRadius": 100,
+        "backgroundColor": "#FAFAFA",
+        "justifyContent": "center",
+        "alignItems": "center"
+      },
+      "secondary": {
+        "height": 56,
+        "borderRadius": 100,
+        "backgroundColor": "#27272A",
+        "justifyContent": "center",
+        "alignItems": "center"
+      }
+    },
+    "inputs": {
+      "standard": {
+        "height": 56,
+        "borderRadius": 12,
+        "backgroundColor": "#18181B",
+        "borderWidth": 1,
+        "borderColor": "#27272A",
+        "color": "#FAFAFA",
+        "paddingHorizontal": 16,
+        "fontSize": 16
+      }
+    }
+  },
+  "assets": {
+    "icons": {
+      "library": "@expo/vector-icons",
+      "set": "Feather",
+      "size_default": 24
+    },
+    "charts": {
+      "library": "react-native-gifted-charts",
+      "dependency_command": "yarn add react-native-gifted-charts react-native-svg"
+    },
+    "haptics": {
+      "library": "expo-haptics",
+      "usage": "Trigger Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light) on all interactive presses"
+    },
+    "blur": {
+      "library": "expo-blur",
+      "usage": "Use BlurView for tab bars and modal overlays"
+    }
+  },
+  "motion": {
+    "feedback": "All touchables must have activeOpacity={0.7}",
+    "transitions": "Use LayoutAnimation for list updates where possible"
+  },
+  "universal_guidelines": [
+    "NO CSS files. Use StyleSheet.create().",
+    "NO HTML elements (div, span). Use View, Text.",
+    "Dark Mode is MANDATORY and PERMANENT.",
+    "Numbers must be monospaced for alignment (price, changes).",
+    "Positive values = Green, Negative = Red. No exceptions.",
+    "Interactive elements must be at least 44x44pt.",
+    "Use 'k'/'m' suffix for large numbers (e.g., $1.2m).",
+    "Date formats: 'MMM DD' (e.g., 'Jan 12').",
+    "Avoid gradients on text. Keep text high contrast white/grey.",
+    "Input fields should auto-capitalize='characters' for Ticker symbols."
+  ],
+  "instructions_to_main_agent": "You are building the Frontend in /app/frontend. The backend is in /app/backend. Start by creating a `theme.js` or `constants/Colors.js` file with the palette. Then build reusable components (Typography, Button, Input, Card). Then implement the screens using Expo Router. MOCK the API calls first to ensure UI works, then connect to localhost:8000."
+}
