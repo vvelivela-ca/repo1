@@ -12,7 +12,7 @@ A dark-themed iOS portfolio tracking app with multi-portfolio support, CSV impor
 
 ## Core Features
 1. **Multi-Portfolio Support** - Create portfolios for each brokerage (Wealthsimple, Fidelity, Schwab, etc.)
-2. **CSV Import** - Upload CSV exports from any brokerage with auto-column detection
+2. **CSV & PDF Import** - Upload CSV exports or PDF brokerage statements with auto-parsing
 3. **Dashboard** - Portfolio summary with total value, all-time & daily gain/loss
 4. **Portfolio Tabs** - Filter by "All" or individual portfolios
 5. **Stock Cards** - Live price, day change %, value, avg cost, total G/L, return %
@@ -44,6 +44,7 @@ A dark-themed iOS portfolio tracking app with multi-portfolio support, CSV impor
 - `PUT /api/holdings/{id}` - Update holding
 - `DELETE /api/holdings/{id}` - Delete holding
 - `POST /api/holdings/import-csv` - Import from CSV file
+- `POST /api/holdings/import-pdf` - Import from PDF statement (pdfplumber)
 
 ### Stocks
 - `GET /api/stocks/quotes?symbols=AAPL,TSLA` - Live quotes
@@ -54,7 +55,7 @@ A dark-themed iOS portfolio tracking app with multi-portfolio support, CSV impor
 - `/stock/[symbol]` - Stock detail with chart
 - `/add-holding` - Add/edit holding form
 - `/portfolios` - Manage portfolios (create/rename/delete)
-- `/import-csv` - CSV import with portfolio selector
+- `/import-csv` - CSV & PDF import with file type toggle and portfolio selector
 
 ## Design
 - Dark theme (#09090B background, #18181B cards)

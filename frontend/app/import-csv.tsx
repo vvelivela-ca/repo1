@@ -27,12 +27,13 @@ interface ImportedHolding {
   avg_price: number;
 }
 
-export default function ImportCSV() {
+export default function ImportFile() {
   const router = useRouter();
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
   const [selectedPortfolio, setSelectedPortfolio] = useState<string>('');
   const [importing, setImporting] = useState(false);
-  const [result, setResult] = useState<{ count: number; holdings: ImportedHolding[] } | null>(null);
+  const [result, setResult] = useState<{ count: number; holdings: ImportedHolding[]; message?: string } | null>(null);
+  const [selectedType, setSelectedType] = useState<'csv' | 'pdf'>('csv');
 
   useEffect(() => {
     (async () => {
@@ -54,13 +55,16 @@ export default function ImportCSV() {
     }
 
     try {
+      const mimeTypes = selectedType === 'csv'
+        ? ['text/csv', 'text/comma-separated-values', 'application/vnd.ms-excel', '*/*']
+        : ['application/pdf', '*/*'];
+
       const docResult = await DocumentPicker.getDocumentAsync({
-        type: ['text/csv', 'text/comma-separated-values', 'application/vnd.ms-excel', '*/*'],
+        type: mimeTypes,
         copyToCacheDirectory: true,
       });
 
       if (docResult.canceled) return;
-
       const file = docResult.assets[0];
       if (!file) return;
 
@@ -69,15 +73,15 @@ export default function ImportCSV() {
 
       const formData = new FormData();
       formData.append('portfolio_id', selectedPortfolio);
-
       const fileBlob = {
         uri: file.uri,
-        name: file.name || 'import.csv',
-        type: file.mimeType || 'text/csv',
+        name: file.name || (selectedType === 'csv' ? 'import.csv' : 'statement.pdf'),
+        type: file.mimeType || (selectedType === 'csv' ? 'text/csv' : 'application/pdf'),
       } as any;
       formData.append('file', fileBlob);
 
-      const res = await fetch(`${API_URL}/api/holdings/import-csv`, {
+      const endpoint = selectedType === 'csv' ? '/api/holdings/import-csv' : '/api/holdings/import-pdf';
+      const res = await fetch(`${API_URL}${endpoint}`, {
         method: 'POST',
         body: formData,
       });
@@ -89,10 +93,10 @@ export default function ImportCSV() {
       }
 
       const data = await res.json();
-      setResult({ count: data.imported_count, holdings: data.holdings });
+      setResult({ count: data.imported_count, holdings: data.holdings, message: data.message });
     } catch (err) {
       console.error('Import error:', err);
-      Alert.alert('Error', 'Failed to import CSV file');
+      Alert.alert('Error', 'Failed to import file');
     } finally {
       setImporting(false);
     }
@@ -106,36 +110,88 @@ export default function ImportCSV() {
           <TouchableOpacity testID="back-from-import" onPress={() => router.back()} style={styles.backBtn} activeOpacity={0.7}>
             <Feather name="arrow-left" size={24} color="#FAFAFA" />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Import CSV</Text>
+          <Text style={styles.headerTitle}>Import Holdings</Text>
           <View style={{ width: 44 }} />
         </View>
 
-        {/* Info */}
-        <View style={styles.infoCard}>
-          <Feather name="info" size={20} color="#60A5FA" />
-          <View style={styles.infoContent}>
-            <Text style={styles.infoTitle}>Supported CSV Format</Text>
-            <Text style={styles.infoText}>Your CSV should have columns for:</Text>
-            <Text style={styles.infoColumns}>Symbol, Shares, Avg Price</Text>
-            <Text style={styles.infoText}>Also supports: Ticker, Quantity, Cost, Book Cost Per Share</Text>
-          </View>
+        {/* File Type Toggle */}
+        <View style={styles.toggleRow}>
+          <TouchableOpacity
+            testID="toggle-csv"
+            style={[styles.toggleBtn, selectedType === 'csv' && styles.toggleBtnActive]}
+            onPress={() => setSelectedType('csv')}
+            activeOpacity={0.7}
+          >
+            <Feather name="file-text" size={18} color={selectedType === 'csv' ? '#FAFAFA' : '#52525B'} />
+            <Text style={[styles.toggleText, selectedType === 'csv' && styles.toggleTextActive]}>CSV File</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            testID="toggle-pdf"
+            style={[styles.toggleBtn, selectedType === 'pdf' && styles.toggleBtnActive]}
+            onPress={() => setSelectedType('pdf')}
+            activeOpacity={0.7}
+          >
+            <Feather name="file" size={18} color={selectedType === 'pdf' ? '#FAFAFA' : '#52525B'} />
+            <Text style={[styles.toggleText, selectedType === 'pdf' && styles.toggleTextActive]}>PDF Statement</Text>
+          </TouchableOpacity>
         </View>
+
+        {/* Info Card */}
+        {selectedType === 'csv' ? (
+          <View style={styles.infoCard}>
+            <Feather name="info" size={20} color="#60A5FA" />
+            <View style={styles.infoContent}>
+              <Text style={styles.infoTitle}>CSV Format</Text>
+              <Text style={styles.infoText}>Your CSV should have columns for:</Text>
+              <Text style={styles.infoColumns}>Symbol, Shares, Avg Price</Text>
+              <Text style={styles.infoText}>Also supports: Ticker, Quantity, Cost, Book Cost Per Share</Text>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.infoCard}>
+            <Feather name="info" size={20} color="#A78BFA" />
+            <View style={styles.infoContent}>
+              <Text style={styles.infoTitle}>PDF Statement Parsing</Text>
+              <Text style={styles.infoText}>Upload brokerage account statements or position reports.</Text>
+              <Text style={styles.infoText}>The app will auto-detect tables with stock symbols, shares, and prices.</Text>
+              <Text style={[styles.infoText, { color: '#FACC15', marginTop: 6 }]}>Works best with statements that have clearly formatted tables.</Text>
+            </View>
+          </View>
+        )}
 
         {/* Brokerage Tips */}
         <View style={styles.tipsCard}>
-          <Text style={styles.tipsTitle}>Export from your brokerage:</Text>
-          {[
-            { name: 'Wealthsimple', steps: 'Activity → Export → CSV' },
-            { name: 'Fidelity', steps: 'Positions → Download' },
-            { name: 'Schwab', steps: 'Accounts → Export' },
-            { name: 'TD Ameritrade', steps: 'My Account → Export Positions' },
-            { name: 'Interactive Brokers', steps: 'Reports → Flex Queries → CSV' },
-          ].map((b, i) => (
-            <View key={i} style={styles.tipRow}>
-              <Text style={styles.tipBrokerage}>{b.name}</Text>
-              <Text style={styles.tipSteps}>{b.steps}</Text>
-            </View>
-          ))}
+          <Text style={styles.tipsTitle}>
+            {selectedType === 'csv' ? 'Export CSV from:' : 'Download PDF from:'}
+          </Text>
+          {selectedType === 'csv' ? (
+            [
+              { name: 'Wealthsimple', steps: 'Activity → Export → CSV' },
+              { name: 'Fidelity', steps: 'Positions → Download' },
+              { name: 'Schwab', steps: 'Accounts → Export' },
+              { name: 'TD Ameritrade', steps: 'My Account → Export Positions' },
+              { name: 'Interactive Brokers', steps: 'Reports → Flex Queries → CSV' },
+            ].map((b, i) => (
+              <View key={i} style={styles.tipRow}>
+                <Text style={styles.tipBrokerage}>{b.name}</Text>
+                <Text style={styles.tipSteps}>{b.steps}</Text>
+              </View>
+            ))
+          ) : (
+            [
+              { name: 'Wealthsimple', steps: 'Documents → Account Statements' },
+              { name: 'Fidelity', steps: 'Statements → Download PDF' },
+              { name: 'Schwab', steps: 'Statements → Brokerage Statement' },
+              { name: 'TD Ameritrade', steps: 'Statements → Account Statement' },
+              { name: 'Interactive Brokers', steps: 'Reports → Statements → PDF' },
+              { name: 'Questrade', steps: 'Reports → Account Statements' },
+            ].map((b, i) => (
+              <View key={i} style={styles.tipRow}>
+                <Text style={styles.tipBrokerage}>{b.name}</Text>
+                <Text style={styles.tipSteps}>{b.steps}</Text>
+              </View>
+            ))
+          )}
         </View>
 
         {/* Portfolio Selector */}
@@ -156,13 +212,15 @@ export default function ImportCSV() {
         </View>
 
         {/* Import Button */}
-        <TouchableOpacity testID="pick-csv-btn" style={styles.importBtn} onPress={handlePickFile} activeOpacity={0.7} disabled={importing}>
+        <TouchableOpacity testID="pick-file-btn" style={styles.importBtn} onPress={handlePickFile} activeOpacity={0.7} disabled={importing}>
           {importing ? (
             <ActivityIndicator color="#09090B" />
           ) : (
             <View style={styles.importBtnInner}>
               <Feather name="upload" size={20} color="#09090B" />
-              <Text style={styles.importBtnText}>Select CSV File</Text>
+              <Text style={styles.importBtnText}>
+                {selectedType === 'csv' ? 'Select CSV File' : 'Select PDF Statement'}
+              </Text>
             </View>
           )}
         </TouchableOpacity>
@@ -170,14 +228,26 @@ export default function ImportCSV() {
         {/* Result */}
         {result && (
           <View style={styles.resultCard}>
-            <Feather name="check-circle" size={24} color="#4ADE80" />
-            <Text style={styles.resultTitle}>Imported {result.count} holdings!</Text>
-            {result.holdings.map((h, i) => (
-              <View key={i} style={styles.resultRow}>
-                <Text style={styles.resultSymbol}>{h.symbol}</Text>
-                <Text style={styles.resultDetail}>{h.shares} shares @ ${h.avg_price.toFixed(2)}</Text>
-              </View>
-            ))}
+            {result.count > 0 ? (
+              <>
+                <Feather name="check-circle" size={24} color="#4ADE80" />
+                <Text style={styles.resultTitle}>Imported {result.count} holdings!</Text>
+                {result.holdings.map((h, i) => (
+                  <View key={i} style={styles.resultRow}>
+                    <Text style={styles.resultSymbol}>{h.symbol}</Text>
+                    <Text style={styles.resultDetail}>{h.shares} shares @ ${h.avg_price.toFixed(2)}</Text>
+                  </View>
+                ))}
+              </>
+            ) : (
+              <>
+                <Feather name="alert-circle" size={24} color="#FACC15" />
+                <Text style={styles.resultTitleWarn}>No holdings detected</Text>
+                <Text style={styles.resultMessage}>
+                  {result.message || 'The file format may not be supported. Try CSV instead or add holdings manually.'}
+                </Text>
+              </>
+            )}
             <TouchableOpacity testID="go-to-dashboard-btn" style={styles.doneBtn} onPress={() => router.back()} activeOpacity={0.7}>
               <Text style={styles.doneBtnText}>Back to Dashboard</Text>
             </TouchableOpacity>
@@ -196,6 +266,11 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12 },
   backBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#18181B', alignItems: 'center', justifyContent: 'center' },
   headerTitle: { fontSize: 20, fontWeight: '700', color: '#FAFAFA' },
+  toggleRow: { flexDirection: 'row', gap: 10, marginTop: 16 },
+  toggleBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 48, borderRadius: 12, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#27272A' },
+  toggleBtnActive: { backgroundColor: '#6366F1', borderColor: '#6366F1' },
+  toggleText: { fontSize: 14, fontWeight: '600', color: '#52525B' },
+  toggleTextActive: { color: '#FAFAFA' },
   infoCard: { flexDirection: 'row', backgroundColor: 'rgba(96, 165, 250, 0.08)', borderRadius: 14, padding: 16, marginTop: 16, gap: 12, borderWidth: 1, borderColor: 'rgba(96, 165, 250, 0.2)' },
   infoContent: { flex: 1 },
   infoTitle: { fontSize: 15, fontWeight: '600', color: '#FAFAFA', marginBottom: 6 },
@@ -205,7 +280,7 @@ const styles = StyleSheet.create({
   tipsTitle: { fontSize: 15, fontWeight: '600', color: '#FAFAFA', marginBottom: 12 },
   tipRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#1f1f23' },
   tipBrokerage: { fontSize: 14, fontWeight: '600', color: '#FAFAFA' },
-  tipSteps: { fontSize: 13, color: '#52525B' },
+  tipSteps: { fontSize: 13, color: '#52525B', maxWidth: '55%', textAlign: 'right' },
   sectionLabel: { fontSize: 14, fontWeight: '600', color: '#A1A1AA', marginTop: 24, marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 },
   portfolioSelector: { gap: 8 },
   portfolioOption: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#18181B', borderRadius: 12, padding: 14, borderWidth: 1, borderColor: '#27272A' },
@@ -217,6 +292,8 @@ const styles = StyleSheet.create({
   importBtnText: { fontSize: 16, fontWeight: '700', color: '#09090B' },
   resultCard: { backgroundColor: '#18181B', borderRadius: 14, borderWidth: 1, borderColor: '#27272A', padding: 20, marginTop: 24, alignItems: 'center' },
   resultTitle: { fontSize: 18, fontWeight: '700', color: '#4ADE80', marginTop: 8, marginBottom: 16 },
+  resultTitleWarn: { fontSize: 18, fontWeight: '700', color: '#FACC15', marginTop: 8, marginBottom: 8 },
+  resultMessage: { fontSize: 14, color: '#A1A1AA', textAlign: 'center', marginBottom: 12 },
   resultRow: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#1f1f23' },
   resultSymbol: { fontSize: 14, fontWeight: '700', color: '#FAFAFA' },
   resultDetail: { fontSize: 13, color: '#A1A1AA', fontFamily: MONO },
