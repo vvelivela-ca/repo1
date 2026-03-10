@@ -47,7 +47,7 @@ interface ChartPoint {
 
 export default function StockDetail() {
   const router = useRouter();
-  const { symbol, holdingId } = useLocalSearchParams<{ symbol: string; holdingId: string }>();
+  const { symbol, holdingId, portfolioId } = useLocalSearchParams<{ symbol: string; holdingId: string; portfolioId: string }>();
   const [holding, setHolding] = useState<Holding | null>(null);
   const [quote, setQuote] = useState<Quote | null>(null);
   const [chartData, setChartData] = useState<ChartPoint[]>([]);
@@ -168,7 +168,7 @@ export default function StockDetail() {
               onPress={() =>
                 router.push({
                   pathname: '/add-holding',
-                  params: { editId: holdingId, editSymbol: symbol, editShares: String(holding?.shares), editAvgPrice: String(holding?.avg_price) },
+                  params: { editId: holdingId, editSymbol: symbol, editShares: String(holding?.shares), editAvgPrice: String(holding?.avg_price), portfolioId: portfolioId },
                 })
               }
             >

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -10,6 +10,8 @@ from typing import List, Optional
 import uuid
 from datetime import datetime, timezone
 import yfinance as yf
+import csv
+import io
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -22,16 +24,27 @@ db = client[os.environ['DB_NAME']]
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # ── Models ──────────────────────────────────────────────
 
+class PortfolioCreate(BaseModel):
+    name: str
+
+class PortfolioUpdate(BaseModel):
+    name: str
+
+class PortfolioResponse(BaseModel):
+    id: str
+    name: str
+    created_at: str
+
 class HoldingCreate(BaseModel):
     symbol: str
     shares: float
     avg_price: float
+    portfolio_id: str
 
 class HoldingUpdate(BaseModel):
     symbol: Optional[str] = None
@@ -43,6 +56,7 @@ class HoldingResponse(BaseModel):
     symbol: str
     shares: float
     avg_price: float
+    portfolio_id: str
     created_at: str
     updated_at: str
 
@@ -60,37 +74,90 @@ SEED_HOLDINGS = [
 
 @app.on_event("startup")
 async def seed_data():
-    count = await db.holdings.count_documents({})
-    if count == 0:
-        logger.info("Seeding initial holdings data...")
+    portfolio_count = await db.portfolios.count_documents({})
+    if portfolio_count == 0:
+        logger.info("Seeding initial data...")
         now = datetime.now(timezone.utc).isoformat()
+        default_id = str(uuid.uuid4())
+        await db.portfolios.insert_one({
+            "id": default_id,
+            "name": "My Portfolio",
+            "created_at": now,
+        })
         for h in SEED_HOLDINGS:
             doc = {
                 "id": str(uuid.uuid4()),
                 "symbol": h["symbol"],
                 "shares": h["shares"],
                 "avg_price": h["avg_price"],
+                "portfolio_id": default_id,
                 "created_at": now,
                 "updated_at": now,
             }
             await db.holdings.insert_one(doc)
-        logger.info(f"Seeded {len(SEED_HOLDINGS)} holdings")
+        logger.info(f"Seeded 1 portfolio + {len(SEED_HOLDINGS)} holdings")
+
+# ── Portfolio CRUD ──────────────────────────────────────
+
+@api_router.get("/portfolios", response_model=List[PortfolioResponse])
+async def get_portfolios():
+    docs = await db.portfolios.find({}, {"_id": 0}).to_list(50)
+    return docs
+
+@api_router.post("/portfolios", response_model=PortfolioResponse)
+async def create_portfolio(data: PortfolioCreate):
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": data.name.strip(),
+        "created_at": now,
+    }
+    await db.portfolios.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api_router.put("/portfolios/{portfolio_id}", response_model=PortfolioResponse)
+async def update_portfolio(portfolio_id: str, data: PortfolioUpdate):
+    existing = await db.portfolios.find_one({"id": portfolio_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    await db.portfolios.update_one({"id": portfolio_id}, {"$set": {"name": data.name.strip()}})
+    updated = await db.portfolios.find_one({"id": portfolio_id}, {"_id": 0})
+    return updated
+
+@api_router.delete("/portfolios/{portfolio_id}")
+async def delete_portfolio(portfolio_id: str):
+    count = await db.portfolios.count_documents({})
+    if count <= 1:
+        raise HTTPException(status_code=400, detail="Cannot delete the last portfolio")
+    result = await db.portfolios.delete_one({"id": portfolio_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    await db.holdings.delete_many({"portfolio_id": portfolio_id})
+    return {"message": "Portfolio and its holdings deleted"}
 
 # ── Holdings CRUD ───────────────────────────────────────
 
 @api_router.get("/holdings", response_model=List[HoldingResponse])
-async def get_holdings():
-    docs = await db.holdings.find({}, {"_id": 0}).to_list(100)
+async def get_holdings(portfolio_id: Optional[str] = None):
+    query = {}
+    if portfolio_id:
+        query["portfolio_id"] = portfolio_id
+    docs = await db.holdings.find(query, {"_id": 0}).to_list(500)
     return docs
 
 @api_router.post("/holdings", response_model=HoldingResponse)
 async def create_holding(data: HoldingCreate):
+    portfolio = await db.portfolios.find_one({"id": data.portfolio_id}, {"_id": 0})
+    if not portfolio:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
     now = datetime.now(timezone.utc).isoformat()
     doc = {
         "id": str(uuid.uuid4()),
         "symbol": data.symbol.upper().strip(),
         "shares": data.shares,
         "avg_price": data.avg_price,
+        "portfolio_id": data.portfolio_id,
         "created_at": now,
         "updated_at": now,
     }
@@ -103,7 +170,6 @@ async def update_holding(holding_id: str, data: HoldingUpdate):
     existing = await db.holdings.find_one({"id": holding_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Holding not found")
-    
     update_fields = {"updated_at": datetime.now(timezone.utc).isoformat()}
     if data.symbol is not None:
         update_fields["symbol"] = data.symbol.upper().strip()
@@ -111,7 +177,6 @@ async def update_holding(holding_id: str, data: HoldingUpdate):
         update_fields["shares"] = data.shares
     if data.avg_price is not None:
         update_fields["avg_price"] = data.avg_price
-    
     await db.holdings.update_one({"id": holding_id}, {"$set": update_fields})
     updated = await db.holdings.find_one({"id": holding_id}, {"_id": 0})
     return updated
@@ -123,15 +188,70 @@ async def delete_holding(holding_id: str):
         raise HTTPException(status_code=404, detail="Holding not found")
     return {"message": "Holding deleted"}
 
+# ── CSV Import ──────────────────────────────────────────
+
+@api_router.post("/holdings/import-csv")
+async def import_csv(portfolio_id: str = Form(...), file: UploadFile = File(...)):
+    portfolio = await db.portfolios.find_one({"id": portfolio_id}, {"_id": 0})
+    if not portfolio:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    content = await file.read()
+    text = content.decode("utf-8")
+    reader = csv.DictReader(io.StringIO(text))
+
+    imported = []
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Normalize headers: strip whitespace and lowercase
+    fieldnames = [f.strip().lower() for f in (reader.fieldnames or [])]
+    reader.fieldnames = fieldnames
+
+    for row in reader:
+        # Try common CSV column names
+        symbol = (row.get("symbol") or row.get("ticker") or row.get("stock") or "").strip().upper()
+        shares_str = (row.get("shares") or row.get("quantity") or row.get("qty") or "").strip()
+        avg_price_str = (row.get("avg_price") or row.get("avg price") or row.get("average price")
+                        or row.get("cost") or row.get("price") or row.get("book cost per share") or "").strip()
+
+        if not symbol or not shares_str:
+            continue
+
+        # Clean numeric values
+        shares_str = shares_str.replace(",", "").replace("$", "")
+        avg_price_str = avg_price_str.replace(",", "").replace("$", "")
+
+        try:
+            shares = float(shares_str)
+            avg_price = float(avg_price_str) if avg_price_str else 0.0
+        except ValueError:
+            continue
+
+        if shares <= 0:
+            continue
+
+        doc = {
+            "id": str(uuid.uuid4()),
+            "symbol": symbol,
+            "shares": shares,
+            "avg_price": avg_price,
+            "portfolio_id": portfolio_id,
+            "created_at": now,
+            "updated_at": now,
+        }
+        await db.holdings.insert_one(doc)
+        doc.pop("_id", None)
+        imported.append(doc)
+
+    return {"imported_count": len(imported), "holdings": imported}
+
 # ── Stock Quotes ────────────────────────────────────────
 
 @api_router.get("/stocks/quotes")
 async def get_stock_quotes(symbols: str):
-    """Fetch live quotes for comma-separated symbols."""
     symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     if not symbol_list:
         return {}
-    
     quotes = {}
     try:
         tickers = yf.Tickers(" ".join(symbol_list))
@@ -152,25 +272,20 @@ async def get_stock_quotes(symbols: str):
                 quotes[sym] = {"price": 0, "previous_close": 0, "day_high": 0, "day_low": 0, "market_cap": 0}
     except Exception as e:
         logger.error(f"Error fetching quotes: {e}")
-    
     return quotes
 
 # ── Stock History ───────────────────────────────────────
 
 @api_router.get("/stocks/history/{symbol}")
 async def get_stock_history(symbol: str, period: str = "1mo"):
-    """Fetch historical price data for a symbol."""
     valid_periods = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y"]
     if period not in valid_periods:
         raise HTTPException(status_code=400, detail=f"Invalid period. Use one of: {valid_periods}")
-    
     try:
         ticker = yf.Ticker(symbol.upper())
         hist = ticker.history(period=period)
-        
         if hist.empty:
             return {"symbol": symbol.upper(), "data": []}
-        
         data_points = []
         for date, row in hist.iterrows():
             data_points.append({
@@ -181,7 +296,6 @@ async def get_stock_history(symbol: str, period: str = "1mo"):
                 "open": round(float(row["Open"]), 2),
                 "volume": int(row["Volume"]),
             })
-        
         return {"symbol": symbol.upper(), "period": period, "data": data_points}
     except Exception as e:
         logger.error(f"Error fetching history for {symbol}: {e}")

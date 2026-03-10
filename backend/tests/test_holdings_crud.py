@@ -42,10 +42,16 @@ class TestHoldingsCRUD:
     
     def test_create_holding_and_verify(self, api_client):
         """Test POST /api/holdings creates a new holding"""
+        # Get a portfolio to use
+        portfolios_response = api_client.get(f"{BASE_URL}/api/portfolios")
+        portfolios = portfolios_response.json()
+        test_portfolio_id = portfolios[0]['id']
+        
         payload = {
             "symbol": "TEST_NVDA",
             "shares": 50,
-            "avg_price": 500.50
+            "avg_price": 500.50,
+            "portfolio_id": test_portfolio_id
         }
         
         # Create holding
@@ -56,6 +62,7 @@ class TestHoldingsCRUD:
         assert created['symbol'] == "TEST_NVDA", "Symbol should be TEST_NVDA"
         assert created['shares'] == 50, "Shares should be 50"
         assert created['avg_price'] == 500.50, "Avg price should be 500.50"
+        assert created['portfolio_id'] == test_portfolio_id, "portfolio_id should match"
         assert 'id' in created, "Response should include id"
         assert 'created_at' in created, "Response should include created_at"
         assert 'updated_at' in created, "Response should include updated_at"
@@ -79,10 +86,16 @@ class TestHoldingsCRUD:
     
     def test_create_holding_lowercase_symbol(self, api_client):
         """Test POST with lowercase symbol converts to uppercase"""
+        # Get a portfolio to use
+        portfolios_response = api_client.get(f"{BASE_URL}/api/portfolios")
+        portfolios = portfolios_response.json()
+        test_portfolio_id = portfolios[0]['id']
+        
         payload = {
             "symbol": "test_amd",
             "shares": 25,
-            "avg_price": 120.00
+            "avg_price": 120.00,
+            "portfolio_id": test_portfolio_id
         }
         
         response = api_client.post(f"{BASE_URL}/api/holdings", json=payload)
@@ -97,11 +110,17 @@ class TestHoldingsCRUD:
     
     def test_update_holding_and_verify(self, api_client):
         """Test PUT /api/holdings/{id} updates existing holding"""
+        # Get a portfolio to use
+        portfolios_response = api_client.get(f"{BASE_URL}/api/portfolios")
+        portfolios = portfolios_response.json()
+        test_portfolio_id = portfolios[0]['id']
+        
         # Create test holding
         create_payload = {
             "symbol": "TEST_INTC",
             "shares": 100,
-            "avg_price": 45.00
+            "avg_price": 45.00,
+            "portfolio_id": test_portfolio_id
         }
         create_response = api_client.post(f"{BASE_URL}/api/holdings", json=create_payload)
         assert create_response.status_code == 200
@@ -146,11 +165,17 @@ class TestHoldingsCRUD:
     
     def test_delete_holding_and_verify(self, api_client):
         """Test DELETE /api/holdings/{id} removes holding"""
+        # Get a portfolio to use
+        portfolios_response = api_client.get(f"{BASE_URL}/api/portfolios")
+        portfolios = portfolios_response.json()
+        test_portfolio_id = portfolios[0]['id']
+        
         # Create test holding
         create_payload = {
             "symbol": "TEST_AMD",
             "shares": 75,
-            "avg_price": 110.00
+            "avg_price": 110.00,
+            "portfolio_id": test_portfolio_id
         }
         create_response = api_client.post(f"{BASE_URL}/api/holdings", json=create_payload)
         assert create_response.status_code == 200
