@@ -247,19 +247,37 @@ async def import_csv(portfolio_id: str = Form(...), file: UploadFile = File(...)
         if shares <= 0:
             continue
 
-        doc = {
-            "id": str(uuid.uuid4()),
-            "symbol": symbol,
-            "shares": shares,
-            "avg_price": avg_price,
-            "currency": (row.get("currency") or "USD").strip().upper(),
-            "portfolio_id": portfolio_id,
-            "created_at": now,
-            "updated_at": now,
-        }
-        await db.holdings.insert_one(doc)
-        doc.pop("_id", None)
-        imported.append(doc)
+        # Check if this symbol already exists in this portfolio
+        existing = await db.holdings.find_one(
+            {"symbol": symbol, "portfolio_id": portfolio_id}, {"_id": 0}
+        )
+        currency_val = (row.get("currency") or "USD").strip().upper()
+
+        if existing:
+            # Update existing holding
+            await db.holdings.update_one(
+                {"id": existing["id"]},
+                {"$set": {"shares": shares, "avg_price": avg_price, "currency": currency_val, "updated_at": now}}
+            )
+            updated = await db.holdings.find_one({"id": existing["id"]}, {"_id": 0})
+            updated["_action"] = "updated"
+            imported.append(updated)
+        else:
+            # Create new holding
+            doc = {
+                "id": str(uuid.uuid4()),
+                "symbol": symbol,
+                "shares": shares,
+                "avg_price": avg_price,
+                "currency": currency_val,
+                "portfolio_id": portfolio_id,
+                "created_at": now,
+                "updated_at": now,
+            }
+            await db.holdings.insert_one(doc)
+            doc.pop("_id", None)
+            doc["_action"] = "created"
+            imported.append(doc)
 
     return {"imported_count": len(imported), "holdings": imported}
 
@@ -370,19 +388,38 @@ async def import_pdf(portfolio_id: str = Form(...), file: UploadFile = File(...)
     imported = []
     now = datetime.now(timezone.utc).isoformat()
     for h in parsed:
-        doc = {
-            "id": str(uuid.uuid4()),
-            "symbol": h["symbol"],
-            "shares": h["shares"],
-            "avg_price": h["avg_price"],
-            "currency": h.get("currency", "USD"),
-            "portfolio_id": portfolio_id,
-            "created_at": now,
-            "updated_at": now,
-        }
-        await db.holdings.insert_one(doc)
-        doc.pop("_id", None)
-        imported.append(doc)
+        symbol = h["symbol"]
+        # Check if this symbol already exists in this portfolio
+        existing = await db.holdings.find_one(
+            {"symbol": symbol, "portfolio_id": portfolio_id}, {"_id": 0}
+        )
+        currency_val = h.get("currency", "USD")
+
+        if existing:
+            # Update existing holding
+            await db.holdings.update_one(
+                {"id": existing["id"]},
+                {"$set": {"shares": h["shares"], "avg_price": h["avg_price"], "currency": currency_val, "updated_at": now}}
+            )
+            updated = await db.holdings.find_one({"id": existing["id"]}, {"_id": 0})
+            updated["_action"] = "updated"
+            imported.append(updated)
+        else:
+            # Create new holding
+            doc = {
+                "id": str(uuid.uuid4()),
+                "symbol": symbol,
+                "shares": h["shares"],
+                "avg_price": h["avg_price"],
+                "currency": currency_val,
+                "portfolio_id": portfolio_id,
+                "created_at": now,
+                "updated_at": now,
+            }
+            await db.holdings.insert_one(doc)
+            doc.pop("_id", None)
+            doc["_action"] = "created"
+            imported.append(doc)
 
     return {"imported_count": len(imported), "holdings": imported}
 
