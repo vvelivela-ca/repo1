@@ -406,28 +406,82 @@ async def get_fx_rates():
     return rates
 
 @api_router.get("/stocks/quotes")
-async def get_stock_quotes(symbols: str):
+async def get_stock_quotes(symbols: str, currencies: str = ""):
+    """Fetch live quotes. Optionally pass currencies (comma-separated, same order as symbols) to help resolve exchange."""
     symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    currency_list = [c.strip().upper() for c in currencies.split(",")] if currencies else []
     if not symbol_list:
         return {}
+
+    # Build symbol-to-currency map
+    sym_currencies = {}
+    for i, sym in enumerate(symbol_list):
+        sym_currencies[sym] = currency_list[i] if i < len(currency_list) else "USD"
+
     quotes = {}
+    # Determine actual yahoo symbols - add exchange suffix based on holding currency
+    yahoo_to_original = {}
+    yahoo_symbols = []
+    for sym in symbol_list:
+        cur = sym_currencies.get(sym, "USD")
+        # If already has exchange suffix, use as-is
+        if "." in sym:
+            yahoo_symbols.append(sym)
+            yahoo_to_original[sym] = sym
+        elif cur == "CAD":
+            yahoo_sym = f"{sym}.TO"
+            yahoo_symbols.append(yahoo_sym)
+            yahoo_to_original[yahoo_sym] = sym
+        elif cur == "INR":
+            yahoo_sym = f"{sym}.NS"
+            yahoo_symbols.append(yahoo_sym)
+            yahoo_to_original[yahoo_sym] = sym
+        else:
+            yahoo_symbols.append(sym)
+            yahoo_to_original[sym] = sym
+
     try:
-        tickers = yf.Tickers(" ".join(symbol_list))
-        for sym in symbol_list:
+        tickers = yf.Tickers(" ".join(yahoo_symbols))
+        for yahoo_sym in yahoo_symbols:
+            original_sym = yahoo_to_original.get(yahoo_sym, yahoo_sym)
             try:
-                ticker = tickers.tickers.get(sym)
+                ticker = tickers.tickers.get(yahoo_sym)
                 if ticker:
                     info = ticker.fast_info
-                    quotes[sym] = {
-                        "price": round(float(info.last_price), 2) if hasattr(info, 'last_price') and info.last_price else 0,
+                    price = round(float(info.last_price), 2) if hasattr(info, 'last_price') and info.last_price else 0
+
+                    # If price is 0, try without exchange suffix (fallback)
+                    if price == 0 and "." in yahoo_sym:
+                        bare_sym = yahoo_sym.split(".")[0]
+                        try:
+                            fallback = yf.Ticker(bare_sym)
+                            fb_info = fallback.fast_info
+                            price = round(float(fb_info.last_price), 2) if hasattr(fb_info, 'last_price') and fb_info.last_price else 0
+                            if price > 0:
+                                info = fb_info
+                                ticker = fallback
+                        except Exception:
+                            pass
+
+                    # Detect price currency
+                    price_currency = sym_currencies.get(original_sym, "USD")
+                    try:
+                        ticker_info = ticker.info
+                        price_currency = ticker_info.get("currency", price_currency).upper()
+                    except Exception:
+                        pass
+
+                    quotes[original_sym] = {
+                        "price": price,
                         "previous_close": round(float(info.previous_close), 2) if hasattr(info, 'previous_close') and info.previous_close else 0,
                         "day_high": round(float(info.day_high), 2) if hasattr(info, 'day_high') and info.day_high else 0,
                         "day_low": round(float(info.day_low), 2) if hasattr(info, 'day_low') and info.day_low else 0,
                         "market_cap": float(info.market_cap) if hasattr(info, 'market_cap') and info.market_cap else 0,
+                        "quote_currency": price_currency,
                     }
             except Exception as e:
-                logger.warning(f"Error fetching quote for {sym}: {e}")
-                quotes[sym] = {"price": 0, "previous_close": 0, "day_high": 0, "day_low": 0, "market_cap": 0}
+                logger.warning(f"Error fetching quote for {yahoo_sym}: {e}")
+                quotes[original_sym] = {"price": 0, "previous_close": 0, "day_high": 0, "day_low": 0, "market_cap": 0, "quote_currency": "USD"}
     except Exception as e:
         logger.error(f"Error fetching quotes: {e}")
     return quotes

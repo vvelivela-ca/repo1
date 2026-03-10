@@ -22,7 +22,7 @@ const CURRENCY_SYMBOLS: Record<CurrencyCode, string> = { USD: '$', CAD: 'C$', IN
 
 interface Portfolio { id: string; name: string; }
 interface Holding { id: string; symbol: string; shares: number; avg_price: number; portfolio_id: string; currency: string; }
-interface Quote { price: number; previous_close: number; }
+interface Quote { price: number; previous_close: number; quote_currency: string; }
 
 export default function Dashboard() {
   const router = useRouter();
@@ -56,8 +56,13 @@ export default function Dashboard() {
       const holdingsData: Holding[] = await holdingsRes.json();
       setHoldings(holdingsData);
       if (holdingsData.length > 0) {
-        const symbols = [...new Set(holdingsData.map((h) => h.symbol))].join(',');
-        const quotesRes = await fetch(`${API_URL}/api/stocks/quotes?symbols=${symbols}`);
+        const uniqueSymbols = [...new Set(holdingsData.map((h) => h.symbol))];
+        const symbols = uniqueSymbols.join(',');
+        // Pass currencies so backend can resolve exchange suffixes (e.g., .TO for CAD)
+        const currencyMap: Record<string, string> = {};
+        holdingsData.forEach((h) => { currencyMap[h.symbol] = h.currency || 'USD'; });
+        const currencies = uniqueSymbols.map((s) => currencyMap[s] || 'USD').join(',');
+        const quotesRes = await fetch(`${API_URL}/api/stocks/quotes?symbols=${symbols}&currencies=${currencies}`);
         setQuotes(await quotesRes.json());
       } else { setQuotes({}); }
     } catch (err) { console.error(err); }
@@ -90,16 +95,20 @@ export default function Dashboard() {
   const formatPct = (val: number) => `${val >= 0 ? '+' : ''}${val.toFixed(2)}%`;
 
   const getTotalValue = () => holdings.reduce((sum, h) => {
-    const price = quotes[h.symbol]?.price || 0;
-    // stock prices from yfinance are in USD, so convert from USD
-    return sum + convert(price * h.shares, 'USD');
+    const q = quotes[h.symbol];
+    const price = q?.price || 0;
+    const quoteCur = q?.quote_currency || 'USD';
+    // Price is in quote_currency (e.g. USD for US stocks, CAD for TSX stocks)
+    return sum + convert(price * h.shares, quoteCur);
   }, 0);
 
   const getTotalCost = () => holdings.reduce((sum, h) => sum + convert(h.avg_price * h.shares, h.currency || 'USD'), 0);
 
   const getTotalDayChange = () => holdings.reduce((sum, h) => {
     const q = quotes[h.symbol];
-    return q ? sum + convert((q.price - q.previous_close) * h.shares, 'USD') : sum;
+    if (!q) return sum;
+    const quoteCur = q.quote_currency || 'USD';
+    return sum + convert((q.price - q.previous_close) * h.shares, quoteCur);
   }, 0);
 
   const totalValue = getTotalValue();
@@ -118,8 +127,12 @@ export default function Dashboard() {
     const nativeCur = (item.currency || 'USD').toUpperCase() as CurrencyCode;
     const nativeCs = CURRENCY_SYMBOLS[nativeCur] || '$';
 
+    // Price is in the stock's quote currency (USD for US, CAD for TSX, etc.)
+    const quoteCur = (q?.quote_currency || 'USD').toUpperCase();
+    const quoteCs = CURRENCY_SYMBOLS[quoteCur as CurrencyCode] || '$';
+
     // Convert to display currency for totals
-    const currentValue = convert(price * item.shares, 'USD');
+    const currentValue = convert(price * item.shares, quoteCur);
     const costBasis = convert(item.avg_price * item.shares, nativeCur);
     const gain = currentValue - costBasis;
     const gainPct = costBasis > 0 ? (gain / costBasis) * 100 : 0;
@@ -141,7 +154,7 @@ export default function Dashboard() {
             </Text>
           </View>
           <View style={styles.holdingRight}>
-            <Text style={styles.priceText}>{price > 0 ? `$${price.toFixed(2)}` : '...'}</Text>
+            <Text style={styles.priceText}>{price > 0 ? `${quoteCs}${price.toFixed(2)}` : '...'}</Text>
             <View style={[styles.changeBadge, isDayPositive ? styles.greenBg : styles.redBg]}>
               <Feather name={isDayPositive ? 'trending-up' : 'trending-down'} size={12} color={isDayPositive ? '#4ADE80' : '#F87171'} />
               <Text style={[styles.changeText, isDayPositive ? styles.greenText : styles.redText]}>{formatPct(dayChgPct)}</Text>
