@@ -116,11 +116,13 @@ export default function Dashboard() {
       // Fetch quotes for ALL unique symbols
       if (holdingsData.length > 0) {
         const uniqueSymbols = [...new Set(holdingsData.map((h) => h.symbol))];
-        const symbols = uniqueSymbols.join(',');
+        // URL encode each symbol to handle special characters like & in ARE&M.NS
+        const encodedSymbols = uniqueSymbols.map(s => encodeURIComponent(s)).join(',');
         console.log(`[Dashboard] Fetching quotes for ${uniqueSymbols.length} symbols`);
-        const quotesRes = await fetch(`${API_URL}/api/stocks/quotes?symbols=${symbols}`);
+        const quotesRes = await fetch(`${API_URL}/api/stocks/quotes?symbols=${encodedSymbols}`);
         const quotesData = await quotesRes.json();
         setQuotes(quotesData);
+        console.log(`[Dashboard] Loaded ${Object.keys(quotesData).length} quotes`);
       } else { 
         setQuotes({}); 
       }
