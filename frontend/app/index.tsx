@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -51,17 +51,13 @@ export default function Dashboard() {
   const router = useRouter();
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
   const [selectedPortfolio, setSelectedPortfolio] = useState<string>('all');
-  const [holdings, setHoldings] = useState<Holding[]>([]);
+  const [allHoldings, setAllHoldings] = useState<Holding[]>([]); // Store ALL holdings
   const [quotes, setQuotes] = useState<Record<string, Quote>>({});
   const [fxRates, setFxRates] = useState<Record<string, number>>({ USD: 1, CAD: 1.36, INR: 84.5 });
   const [displayCurrency, setDisplayCurrency] = useState<CurrencyCode>('USD');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-  
-  // Ref to track if component is mounted and prevent stale updates
-  const isMounted = useRef(true);
-  const isFetching = useRef(false);
 
   // Filter by asset type
   const [filterAssetType, setFilterAssetType] = useState<string | null>(null);
@@ -83,17 +79,17 @@ export default function Dashboard() {
     else { setSortKey(key); setSortAsc(false); }
   };
 
-  // Keep selected portfolio in a ref to avoid stale closure issues
-  const selectedPortfolioRef = useRef(selectedPortfolio);
-  useEffect(() => {
-    selectedPortfolioRef.current = selectedPortfolio;
-  }, [selectedPortfolio]);
+  // Client-side filtered holdings based on selected portfolio - INSTANT updates
+  const holdings = useMemo(() => {
+    if (selectedPortfolio === 'all') return allHoldings;
+    return allHoldings.filter(h => h.portfolio_id === selectedPortfolio);
+  }, [allHoldings, selectedPortfolio]);
 
   const fetchPortfolios = useCallback(async () => {
     try {
       const res = await fetch(`${API_URL}/api/portfolios`);
       const data = await res.json();
-      if (isMounted.current) setPortfolios(data);
+      setPortfolios(data);
     } catch (err) { console.error('Error fetching portfolios:', err); }
   }, []);
 
@@ -101,104 +97,76 @@ export default function Dashboard() {
     try {
       const res = await fetch(`${API_URL}/api/fx-rates`);
       const data = await res.json();
-      if (isMounted.current) setFxRates(data);
+      setFxRates(data);
     } catch (err) { console.error('Error fetching FX rates:', err); }
   }, []);
 
-  // Core data fetching function - uses ref to get current portfolio
-  const fetchData = useCallback(async (showLoading = true, forcePortfolio?: string) => {
-    // Prevent duplicate fetches
-    if (isFetching.current) return;
-    isFetching.current = true;
-    
+  // Always fetch ALL holdings - filter client-side for instant portfolio switching
+  const fetchAllData = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true);
     try {
-      // Use forcePortfolio or ref to avoid stale closure
-      const currentPortfolio = forcePortfolio ?? selectedPortfolioRef.current;
+      console.log('[Dashboard] Fetching all holdings...');
       
-      // Fetch holdings
-      const url = currentPortfolio === 'all' 
-        ? `${API_URL}/api/holdings` 
-        : `${API_URL}/api/holdings?portfolio_id=${currentPortfolio}`;
-      const holdingsRes = await fetch(url);
+      // Always fetch ALL holdings
+      const holdingsRes = await fetch(`${API_URL}/api/holdings`);
       const holdingsData: Holding[] = await holdingsRes.json();
+      setAllHoldings(holdingsData);
+      console.log(`[Dashboard] Loaded ${holdingsData.length} holdings`);
       
-      if (!isMounted.current) return;
-      setHoldings(holdingsData);
-      
-      // Fetch quotes for all holdings
+      // Fetch quotes for ALL unique symbols
       if (holdingsData.length > 0) {
         const uniqueSymbols = [...new Set(holdingsData.map((h) => h.symbol))];
         const symbols = uniqueSymbols.join(',');
+        console.log(`[Dashboard] Fetching quotes for ${uniqueSymbols.length} symbols`);
         const quotesRes = await fetch(`${API_URL}/api/stocks/quotes?symbols=${symbols}`);
         const quotesData = await quotesRes.json();
-        if (isMounted.current) setQuotes(quotesData);
+        setQuotes(quotesData);
       } else { 
-        if (isMounted.current) setQuotes({}); 
+        setQuotes({}); 
       }
       
-      if (isMounted.current) setLastRefresh(new Date());
+      setLastRefresh(new Date());
     } catch (err) { 
       console.error('Error fetching data:', err);
-      if (isMounted.current) {
-        Alert.alert('Error', 'Failed to fetch data. Pull to refresh.');
-      }
+      Alert.alert('Error', 'Failed to fetch data. Pull to refresh.');
     }
     finally { 
-      isFetching.current = false;
-      if (isMounted.current) {
-        setLoading(false); 
-        setRefreshing(false); 
-      }
+      setLoading(false); 
+      setRefreshing(false); 
     }
   }, []);
 
-  // Cleanup on unmount
-  useEffect(() => {
-    isMounted.current = true;
-    return () => { isMounted.current = false; };
-  }, []);
-
-  // Initial load
+  // Initial load - fetch everything once
   useEffect(() => { 
     fetchPortfolios(); 
     fetchFxRates(); 
-    fetchData(true, 'all');
+    fetchAllData(true);
   }, []);
 
-  // Fetch data when portfolio changes
-  useEffect(() => { 
-    fetchData(true, selectedPortfolio); 
-  }, [selectedPortfolio]);
-
-  // Refresh when screen comes into focus - FIXED: wait for animations to complete
+  // Refresh when screen comes into focus
   useFocusEffect(
     useCallback(() => {
-      // Wait for screen transition animation to complete before fetching
       const task = InteractionManager.runAfterInteractions(() => {
         console.log('[Dashboard] Screen focused - refreshing data');
-        fetchData(false);
+        fetchAllData(false);
         fetchFxRates();
       });
-      
       return () => task.cancel();
-    }, [fetchData, fetchFxRates])
+    }, [fetchAllData, fetchFxRates])
   );
 
   // Auto-refresh every 60 seconds
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (!isFetching.current) fetchData(false);
-    }, 60000);
+    const interval = setInterval(() => fetchAllData(false), 60000);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [fetchAllData]);
 
   const onRefresh = useCallback(() => { 
     setRefreshing(true); 
     fetchPortfolios(); 
     fetchFxRates(); 
-    fetchData(false); 
-  }, [fetchPortfolios, fetchFxRates, fetchData]);
+    fetchAllData(false); 
+  }, [fetchPortfolios, fetchFxRates, fetchAllData]);
 
   // Convert value from native currency to display currency
   const convert = useCallback((amount: number, fromCurrency: string): number => {
