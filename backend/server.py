@@ -617,7 +617,7 @@ async def parse_holdings_from_text(text: str) -> List[Dict]:
 
 @api_router.post("/holdings/import")
 async def import_file(portfolio_id: str = Form(...), file: UploadFile = File(...)):
-    """Universal file import - supports CSV, Excel, PDF, and TXT formats."""
+    """Universal file import - supports CSV, Excel, PDF, Images (PNG, JPG), and TXT formats."""
     portfolio = await db.portfolios.find_one({"id": portfolio_id}, {"_id": 0})
     if not portfolio:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -628,8 +628,44 @@ async def import_file(portfolio_id: str = Form(...), file: UploadFile = File(...
     holdings_data = []
     message = None
     
+    # Check for image files
+    image_extensions = ('.png', '.jpg', '.jpeg', '.webp', '.gif')
+    is_image = filename.endswith(image_extensions)
+    
+    if is_image:
+        # Image file - use AI vision to extract holdings
+        try:
+            import base64
+            
+            # Determine mime type
+            if filename.endswith('.png'):
+                mime_type = "image/png"
+            elif filename.endswith('.webp'):
+                mime_type = "image/webp"
+            elif filename.endswith('.gif'):
+                mime_type = "image/gif"
+            else:
+                mime_type = "image/jpeg"
+            
+            # Convert to base64
+            base64_image = base64.b64encode(content).decode('utf-8')
+            
+            # Use AI vision to parse
+            holdings_data = await _ai_parse_image(base64_image, mime_type)
+            
+            if not holdings_data:
+                return {
+                    "imported_count": 0,
+                    "holdings": [],
+                    "message": "Could not detect holdings in image. Make sure the image shows a clear portfolio/holdings statement."
+                }
+                
+        except Exception as e:
+            logger.error(f"Image parsing error: {e}")
+            raise HTTPException(status_code=400, detail=f"Could not process image: {str(e)}")
+    
     # Detect file type and parse
-    if filename.endswith('.xlsx') or filename.endswith('.xls'):
+    elif filename.endswith('.xlsx') or filename.endswith('.xls'):
         # Excel file
         try:
             wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
@@ -900,6 +936,85 @@ IMPORTANT RULES:
     except Exception as e:
         logger.error(f"AI parsing error: {e}")
         return []
+
+
+async def _ai_parse_image(base64_image: str, mime_type: str) -> List[Dict]:
+    """Use GPT-4 Vision to extract holdings from an image (screenshot of portfolio)."""
+    api_key = os.environ.get('EMERGENT_LLM_KEY')
+    if not api_key:
+        logger.warning("EMERGENT_LLM_KEY not set - Image AI parsing disabled")
+        return []
+
+    try:
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=f"image-parse-{uuid.uuid4()}",
+            system_message="""You are a financial document parser. Extract ALL stock/ETF/crypto/mutual fund holdings from portfolio screenshots, brokerage statements, or account summaries.
+
+Return ONLY a valid JSON array. Each item must have:
+- "symbol": ticker symbol (e.g. "AAPL", "QQQ", "SHOP.TO", "BTC-USD", "RELIANCE.NS") - uppercase, include exchange suffix if present
+- "shares": number of shares/units (float)
+- "avg_price": average cost per share (float, use 0 if not found)
+
+IMPORTANT RULES:
+1. Extract ALL holdings you can find - stocks, ETFs, mutual funds, crypto
+2. For Canadian stocks, keep the .TO or .V suffix if present
+3. For Indian stocks, keep the .NS or .BO suffix if present
+4. For crypto, use format like BTC-USD, ETH-USD
+5. If you see "quantity", "units", "shares" - that's the shares count
+6. If you see "book cost", "avg cost", "average price" - that's the avg_price
+7. Ignore cash balances, totals, and non-holding entries
+8. Return EMPTY array [] if no holdings found
+9. Return ONLY the JSON array - no explanation"""
+        ).with_model("openai", "gpt-4o")
+
+        # Create image message with base64 data
+        user_msg = UserMessage(
+            text="Extract ALL stock/ETF/crypto holdings from this portfolio image. Return JSON array:",
+            images=[f"data:{mime_type};base64,{base64_image}"]
+        )
+        
+        response = await chat.send_message(user_msg)
+        response_text = response.strip()
+        
+        # Handle markdown code blocks
+        if "```" in response_text:
+            match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response_text)
+            if match:
+                response_text = match.group(1).strip()
+        
+        # Try to find JSON array in response
+        if not response_text.startswith('['):
+            match = re.search(r'\[[\s\S]*\]', response_text)
+            if match:
+                response_text = match.group(0)
+        
+        parsed = json_module.loads(response_text)
+        if not isinstance(parsed, list):
+            return []
+
+        # Validate entries
+        results = []
+        for item in parsed:
+            sym = str(item.get("symbol", "")).strip().upper()
+            shares = float(item.get("shares", 0))
+            avg_price = float(item.get("avg_price", 0))
+            
+            # Basic validation
+            if sym and shares > 0 and len(sym) <= 15:
+                results.append({
+                    "symbol": sym,
+                    "shares": shares,
+                    "avg_price": avg_price
+                })
+        
+        logger.info(f"AI parsed {len(results)} holdings from image")
+        return results
+        
+    except Exception as e:
+        logger.error(f"AI image parsing error: {e}")
+        return []
+
 
 # ── Stock Quotes (FREE via yfinance) ────────────────────
 
