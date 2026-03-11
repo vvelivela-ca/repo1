@@ -116,6 +116,9 @@ backend:
         - working: true
         - agent: "main"
         - comment: "All CRUD endpoints tested with curl - create, read, update, delete working"
+        - working: true
+        - agent: "testing"
+        - comment: "Comprehensive API testing completed successfully. All 8 test cases passed: 1) Portfolio List API (3 portfolios found with proper structure), 2) Holdings List API (29 holdings with all required fields: symbol, shares, avg_price, currency, asset_type, exchange), 3) Holdings Portfolio Filter (filtering working correctly), 4) Stock Quotes API (AAPL, MSFT quotes with quote_currency), 5) FX Rates API (USD, CAD, INR, GBP, EUR rates), 6) Create Holding Auto-Detection (NVDA auto-detected as Stock/USD), 7) Ticker Lookup for SHOP.TO (TSX/CAD) and VFIAX (Mutual Fund). All endpoints return 200 status, proper data structures, and auto-detection features working perfectly."
 
   - task: "Portfolio Summary API"
     implemented: true
@@ -128,6 +131,9 @@ backend:
         - working: true
         - agent: "main"
         - comment: "Returns total value, cost, gain/loss, percentage, and category breakdown"
+        - working: true
+        - agent: "testing"
+        - comment: "Portfolio endpoints working perfectly. GET /api/portfolios returns 3 portfolios with proper structure (id, name, portfolio_type, created_at). Portfolio filtering for holdings works correctly - tested with portfolio_id filtering."
 
 frontend:
   - task: "Home Screen - Portfolio Dashboard"
@@ -196,3 +202,7 @@ test_plan:
 agent_communication:
     - agent: "main"
     - message: "Initial MVP implementation complete. Backend APIs tested with curl. Frontend screens created with all CRUD functionality."
+    - agent: "main"
+    - message: "Testing focus: 1) Screen refresh using useFocusEffect - need to verify navigating away and back triggers data refresh and portfolio totals update. 2) PDF import with AI parsing - verify /api/holdings/import endpoint with PDF files uses LLM to extract holdings."
+    - agent: "testing"
+    - message: "Backend API testing completed successfully. All 8 comprehensive test cases passed: Portfolio List API (found 3 portfolios with proper structure), Holdings List API (29 holdings with all required fields), Holdings Portfolio Filter (working correctly), Stock Quotes API (AAPL, MSFT with quote_currency), FX Rates API (USD, CAD, INR, GBP, EUR), Create Holding Auto-Detection (NVDA auto-detected as Stock/USD), Ticker Lookup for Canadian stocks (SHOP.TO as TSX/CAD), and Mutual Fund detection (VFIAX). All endpoints return 200 status, proper data structures, currency and asset_type auto-detection working perfectly. Holdings include proper fields: symbol, shares, avg_price, currency, asset_type, exchange. The refresh/data fetch functionality is working as expected through the APIs."

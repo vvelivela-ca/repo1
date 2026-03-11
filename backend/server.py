@@ -72,6 +72,23 @@ EXCHANGE_CURRENCIES = {
 # Common crypto symbols
 CRYPTO_SYMBOLS = {"BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "DOT", "MATIC", "LINK", "AVAX", "SHIB", "LTC", "UNI", "ATOM", "XLM"}
 
+# Common US Mutual Fund tickers (Vanguard, Fidelity, etc.)
+MUTUAL_FUND_TICKERS = {
+    # Vanguard
+    "VFIAX", "VTSAX", "VBTLX", "VTIAX", "VTABX", "VWUSX", "VFINX", "VGTSX", "VEXAX",
+    # Fidelity
+    "FXAIX", "FSKAX", "FZROX", "FZILX", "FBALX", "FCNTX", "FDGRX", "FPADX", "FSMAX",
+    # Schwab
+    "SWPPX", "SWTSX", "SCHB", "SCHD", "SCHF", "SCHZ",
+    # T. Rowe Price
+    "TRBCX", "PRWCX", "PRGFX",
+    # American Funds
+    "AGTHX", "ANCFX", "ANWPX",
+}
+
+# 401k/IRA common fund identifiers (these may need special handling)
+RETIREMENT_FUND_PATTERNS = ["401K", "IRA", "TARGET", "RETIRE", "LIFEPATH"]
+
 # ── Models ──────────────────────────────────────────────
 
 class PortfolioCreate(BaseModel):
@@ -221,6 +238,22 @@ async def detect_ticker_info(symbol: str) -> Dict[str, Any]:
                     "exchange": "CRYPTO",
                     "currency": "USD",
                     "asset_type": "Crypto",
+                    "price": float(info.last_price)
+                }
+        except:
+            pass
+    
+    # Check if it's a known mutual fund
+    if symbol in MUTUAL_FUND_TICKERS:
+        try:
+            ticker = yf.Ticker(symbol)
+            info = ticker.fast_info
+            if hasattr(info, 'last_price') and info.last_price and info.last_price > 0:
+                return {
+                    "symbol": symbol,
+                    "exchange": "Mutual Fund",
+                    "currency": "USD",
+                    "asset_type": "Mutual Fund",
                     "price": float(info.last_price)
                 }
         except:
