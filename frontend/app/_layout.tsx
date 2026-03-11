@@ -1,53 +1,25 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React from 'react';
+import { View, StyleSheet } from 'react-native';
 
 export default function RootLayout() {
   return (
-    <>
+    <View style={styles.container}>
       <StatusBar style="light" />
       <Stack
         screenOptions={{
-          headerStyle: {
-            backgroundColor: '#1a1a2e',
-          },
-          headerTintColor: '#fff',
-          headerTitleStyle: {
-            fontWeight: 'bold',
-          },
-          contentStyle: {
-            backgroundColor: '#0f0f1a',
-          },
+          headerShown: false,
+          contentStyle: { backgroundColor: '#09090B' },
+          animation: 'slide_from_right',
         }}
-      >
-        <Stack.Screen
-          name="index"
-          options={{
-            title: 'Holdings Hub',
-            headerShown: true,
-          }}
-        />
-        <Stack.Screen
-          name="add-holding"
-          options={{
-            title: 'Add Holding',
-            presentation: 'modal',
-          }}
-        />
-        <Stack.Screen
-          name="edit-holding"
-          options={{
-            title: 'Edit Holding',
-            presentation: 'modal',
-          }}
-        />
-        <Stack.Screen
-          name="holding-details"
-          options={{
-            title: 'Holding Details',
-          }}
-        />
-      </Stack>
-    </>
+      />
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#09090B',
+  },
+});

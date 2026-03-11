@@ -5,344 +5,171 @@ import {
   StyleSheet,
   TextInput,
   TouchableOpacity,
-  ScrollView,
-  Alert,
-  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  Keyboard,
+  TouchableWithoutFeedback,
+  Alert,
+  ActivityIndicator,
+  ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
-import axios from 'axios';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { Feather } from '@expo/vector-icons';
 
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
+const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
-const CATEGORIES = [
-  'Stock',
-  'Crypto',
-  'ETF',
-  'Mutual Fund',
-  'Bond',
-  'Real Estate',
-  'Other',
-];
-
-const CATEGORY_COLORS: Record<string, string> = {
-  Stock: '#4ECDC4',
-  Crypto: '#FFE66D',
-  ETF: '#95E1D3',
-  'Mutual Fund': '#F38181',
-  Bond: '#AA96DA',
-  'Real Estate': '#FCBAD3',
-  Other: '#A8D8EA',
-};
-
-export default function AddHoldingScreen() {
+export default function AddHolding() {
   const router = useRouter();
-  const [loading, setLoading] = useState(false);
-  const [name, setName] = useState('');
-  const [symbol, setSymbol] = useState('');
-  const [quantity, setQuantity] = useState('');
-  const [purchasePrice, setPurchasePrice] = useState('');
-  const [currentPrice, setCurrentPrice] = useState('');
-  const [category, setCategory] = useState('Stock');
-  const [purchaseDate, setPurchaseDate] = useState('');
-  const [notes, setNotes] = useState('');
+  const { editId, editSymbol, editShares, editAvgPrice, portfolioId } = useLocalSearchParams<{
+    editId?: string;
+    editSymbol?: string;
+    editShares?: string;
+    editAvgPrice?: string;
+    portfolioId?: string;
+  }>();
 
-  const handleSubmit = async () => {
-    if (!name.trim()) {
-      Alert.alert('Error', 'Please enter a name for the holding');
-      return;
-    }
-    if (!symbol.trim()) {
-      Alert.alert('Error', 'Please enter a symbol');
-      return;
-    }
-    if (!quantity || parseFloat(quantity) <= 0) {
-      Alert.alert('Error', 'Please enter a valid quantity');
-      return;
-    }
-    if (!purchasePrice || parseFloat(purchasePrice) <= 0) {
-      Alert.alert('Error', 'Please enter a valid purchase price');
-      return;
-    }
-    if (!currentPrice || parseFloat(currentPrice) <= 0) {
-      Alert.alert('Error', 'Please enter a valid current price');
-      return;
-    }
+  const isEditing = !!editId;
 
-    setLoading(true);
+  const [symbol, setSymbol] = useState(editSymbol || '');
+  const [shares, setShares] = useState(editShares || '');
+  const [avgPrice, setAvgPrice] = useState(editAvgPrice || '');
+  const [currency, setCurrency] = useState('USD');
+  const [assetType, setAssetType] = useState('Stock');
+  const [exchange, setExchange] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const ASSET_TYPES = ['Stock', 'ETF', 'Mutual Fund', 'Crypto', 'Bond', 'Real Estate', 'Other'];
+  const EXCHANGES = ['NYSE', 'NASDAQ', 'TSX', 'NSE', 'BSE', 'Crypto', 'Other'];
+
+  const handleSave = async () => {
+    if (!symbol.trim()) { Alert.alert('Error', 'Please enter a stock symbol'); return; }
+    if (!shares.trim() || isNaN(Number(shares)) || Number(shares) <= 0) { Alert.alert('Error', 'Please enter valid shares'); return; }
+    if (!avgPrice.trim() || isNaN(Number(avgPrice)) || Number(avgPrice) <= 0) { Alert.alert('Error', 'Please enter valid avg price'); return; }
+
+    setSaving(true);
     try {
-      await axios.post(`${API_URL}/api/holdings`, {
-        name: name.trim(),
-        symbol: symbol.trim().toUpperCase(),
-        quantity: parseFloat(quantity),
-        purchase_price: parseFloat(purchasePrice),
-        current_price: parseFloat(currentPrice),
-        category,
-        purchase_date: purchaseDate || null,
-        notes: notes.trim() || null,
-      });
+      if (isEditing) {
+        await fetch(`${API_URL}/api/holdings/${editId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbol: symbol.trim().toUpperCase(), shares: parseFloat(shares), avg_price: parseFloat(avgPrice), asset_type: assetType, exchange: exchange || null }),
+        });
+      } else {
+        await fetch(`${API_URL}/api/holdings`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbol: symbol.trim().toUpperCase(), shares: parseFloat(shares), avg_price: parseFloat(avgPrice), portfolio_id: portfolioId, currency, asset_type: assetType, exchange: exchange || null }),
+        });
+      }
       router.back();
-    } catch (error) {
-      console.error('Error creating holding:', error);
-      Alert.alert('Error', 'Failed to create holding. Please try again.');
+    } catch (err) {
+      console.error('Error saving:', err);
+      Alert.alert('Error', 'Failed to save holding');
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.keyboardView}
-      >
-        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-          <View style={styles.form}>
-            {/* Name Input */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Name *</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="e.g., Apple Inc."
-                placeholderTextColor="#666"
-                value={name}
-                onChangeText={setName}
-              />
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.flex}>
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+          <View style={styles.inner}>
+            <View style={styles.header}>
+              <TouchableOpacity testID="close-form-btn" onPress={() => router.back()} style={styles.closeBtn} activeOpacity={0.7}>
+                <Feather name="x" size={24} color="#FAFAFA" />
+              </TouchableOpacity>
+              <Text style={styles.headerTitle}>{isEditing ? 'Edit Holding' : 'Add Holding'}</Text>
+              <View style={{ width: 44 }} />
             </View>
 
-            {/* Symbol Input */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Symbol *</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="e.g., AAPL"
-                placeholderTextColor="#666"
-                value={symbol}
-                onChangeText={setSymbol}
-                autoCapitalize="characters"
-              />
-            </View>
-
-            {/* Category Selection */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Category</Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={styles.categoryScroll}
-              >
-                {CATEGORIES.map((cat) => (
-                  <TouchableOpacity
-                    key={cat}
-                    style={[
-                      styles.categoryChip,
-                      {
-                        backgroundColor:
-                          category === cat
-                            ? CATEGORY_COLORS[cat]
-                            : 'transparent',
-                        borderColor: CATEGORY_COLORS[cat],
-                      },
-                    ]}
-                    onPress={() => setCategory(cat)}
-                  >
-                    <Text
-                      style={[
-                        styles.categoryChipText,
-                        { color: category === cat ? '#000' : CATEGORY_COLORS[cat] },
-                      ]}
-                    >
-                      {cat}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </View>
-
-            {/* Quantity Input */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Quantity *</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="e.g., 10"
-                placeholderTextColor="#666"
-                value={quantity}
-                onChangeText={setQuantity}
-                keyboardType="decimal-pad"
-              />
-            </View>
-
-            {/* Purchase Price Input */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Purchase Price (per unit) *</Text>
-              <View style={styles.priceInputContainer}>
-                <Text style={styles.currencySymbol}>$</Text>
-                <TextInput
-                  style={styles.priceInput}
-                  placeholder="0.00"
-                  placeholderTextColor="#666"
-                  value={purchasePrice}
-                  onChangeText={setPurchasePrice}
-                  keyboardType="decimal-pad"
-                />
+            <View style={styles.form}>
+              <View style={styles.fieldGroup}>
+                <Text style={styles.fieldLabel}>Stock Symbol</Text>
+                <TextInput testID="symbol-input" style={styles.input} value={symbol} onChangeText={setSymbol} placeholder="e.g. AAPL" placeholderTextColor="#3F3F46" autoCapitalize="characters" autoCorrect={false} editable={!isEditing} />
               </View>
-            </View>
-
-            {/* Current Price Input */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Current Price (per unit) *</Text>
-              <View style={styles.priceInputContainer}>
-                <Text style={styles.currencySymbol}>$</Text>
-                <TextInput
-                  style={styles.priceInput}
-                  placeholder="0.00"
-                  placeholderTextColor="#666"
-                  value={currentPrice}
-                  onChangeText={setCurrentPrice}
-                  keyboardType="decimal-pad"
-                />
+              <View style={styles.fieldGroup}>
+                <Text style={styles.fieldLabel}>Number of Shares</Text>
+                <TextInput testID="shares-input" style={styles.input} value={shares} onChangeText={setShares} placeholder="e.g. 100" placeholderTextColor="#3F3F46" keyboardType="decimal-pad" />
               </View>
+              <View style={styles.fieldGroup}>
+                <Text style={styles.fieldLabel}>Average Price per Share</Text>
+                <TextInput testID="avg-price-input" style={styles.input} value={avgPrice} onChangeText={setAvgPrice} placeholder="e.g. 150.00" placeholderTextColor="#3F3F46" keyboardType="decimal-pad" />
+              </View>
+              {!isEditing && (
+                <View style={styles.fieldGroup}>
+                  <Text style={styles.fieldLabel}>Currency</Text>
+                  <View style={styles.currRow}>
+                    {['USD', 'CAD', 'INR'].map((c) => (
+                      <TouchableOpacity key={c} testID={`currency-btn-${c}`} style={[styles.currBtn, currency === c && styles.currBtnActive]} onPress={() => setCurrency(c)} activeOpacity={0.7}>
+                        <Text style={[styles.currBtnText, currency === c && styles.currBtnTextActive]}>{c === 'USD' ? '$ USD' : c === 'CAD' ? 'C$ CAD' : '₹ INR'}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              )}
+              {!isEditing && (
+                <View style={styles.fieldGroup}>
+                  <Text style={styles.fieldLabel}>Asset Type</Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    <View style={styles.currRow}>
+                      {ASSET_TYPES.map((t) => (
+                        <TouchableOpacity key={t} style={[styles.typeBtn, assetType === t && styles.currBtnActive]} onPress={() => setAssetType(t)} activeOpacity={0.7}>
+                          <Text style={[styles.currBtnText, assetType === t && styles.currBtnTextActive]}>{t}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </ScrollView>
+                </View>
+              )}
+              {!isEditing && (
+                <View style={styles.fieldGroup}>
+                  <Text style={styles.fieldLabel}>Exchange (Optional)</Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    <View style={styles.currRow}>
+                      <TouchableOpacity style={[styles.typeBtn, exchange === '' && styles.currBtnActive]} onPress={() => setExchange('')} activeOpacity={0.7}>
+                        <Text style={[styles.currBtnText, exchange === '' && styles.currBtnTextActive]}>Auto</Text>
+                      </TouchableOpacity>
+                      {EXCHANGES.map((e) => (
+                        <TouchableOpacity key={e} style={[styles.typeBtn, exchange === e && styles.currBtnActive]} onPress={() => setExchange(e)} activeOpacity={0.7}>
+                          <Text style={[styles.currBtnText, exchange === e && styles.currBtnTextActive]}>{e}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </ScrollView>
+                </View>
+              )}
             </View>
 
-            {/* Purchase Date Input */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Purchase Date (optional)</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor="#666"
-                value={purchaseDate}
-                onChangeText={setPurchaseDate}
-              />
-            </View>
-
-            {/* Notes Input */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Notes (optional)</Text>
-              <TextInput
-                style={[styles.input, styles.notesInput]}
-                placeholder="Add any notes about this holding..."
-                placeholderTextColor="#666"
-                value={notes}
-                onChangeText={setNotes}
-                multiline
-                numberOfLines={4}
-                textAlignVertical="top"
-              />
-            </View>
+            <TouchableOpacity testID="save-holding-btn" style={[styles.saveBtn, saving && styles.saveBtnDisabled]} activeOpacity={0.7} onPress={handleSave} disabled={saving}>
+              {saving ? <ActivityIndicator color="#09090B" /> : <Text style={styles.saveBtnText}>{isEditing ? 'Update Holding' : 'Add to Portfolio'}</Text>}
+            </TouchableOpacity>
           </View>
-        </ScrollView>
-
-        {/* Submit Button */}
-        <View style={styles.buttonContainer}>
-          <TouchableOpacity
-            style={styles.submitButton}
-            onPress={handleSubmit}
-            disabled={loading}
-          >
-            {loading ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <>
-                <Ionicons name="checkmark" size={20} color="#fff" />
-                <Text style={styles.submitButtonText}>Add Holding</Text>
-              </>
-            )}
-          </TouchableOpacity>
-        </View>
+        </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#0f0f1a',
-  },
-  keyboardView: {
-    flex: 1,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  form: {
-    padding: 20,
-  },
-  inputGroup: {
-    marginBottom: 20,
-  },
-  label: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  input: {
-    backgroundColor: '#1a1a2e',
-    borderRadius: 12,
-    padding: 16,
-    color: '#fff',
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: '#2a2a3e',
-  },
-  categoryScroll: {
-    flexDirection: 'row',
-  },
-  categoryChip: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
-    marginRight: 10,
-    borderWidth: 1,
-  },
-  categoryChipText: {
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  priceInputContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#1a1a2e',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#2a2a3e',
-  },
-  currencySymbol: {
-    color: '#888',
-    fontSize: 18,
-    paddingLeft: 16,
-  },
-  priceInput: {
-    flex: 1,
-    padding: 16,
-    color: '#fff',
-    fontSize: 16,
-  },
-  notesInput: {
-    height: 100,
-    paddingTop: 16,
-  },
-  buttonContainer: {
-    padding: 20,
-    paddingBottom: 32,
-  },
-  submitButton: {
-    backgroundColor: '#4ECDC4',
-    borderRadius: 12,
-    padding: 16,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  submitButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-    marginLeft: 8,
-  },
+  container: { flex: 1, backgroundColor: '#09090B' },
+  flex: { flex: 1 },
+  inner: { flex: 1, paddingHorizontal: 20 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12 },
+  closeBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#18181B', alignItems: 'center', justifyContent: 'center' },
+  headerTitle: { fontSize: 20, fontWeight: '700', color: '#FAFAFA' },
+  form: { marginTop: 32, gap: 24 },
+  fieldGroup: {},
+  fieldLabel: { fontSize: 14, fontWeight: '600', color: '#A1A1AA', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 },
+  input: { height: 56, borderRadius: 12, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#27272A', color: '#FAFAFA', paddingHorizontal: 16, fontSize: 18, fontWeight: '500' },
+  saveBtn: { height: 56, borderRadius: 100, backgroundColor: '#FAFAFA', alignItems: 'center', justifyContent: 'center', marginTop: 40 },
+  saveBtnDisabled: { opacity: 0.5 },
+  saveBtnText: { fontSize: 16, fontWeight: '700', color: '#09090B' },
+  currRow: { flexDirection: 'row', gap: 10 },
+  currBtn: { flex: 1, height: 48, borderRadius: 12, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#27272A', alignItems: 'center', justifyContent: 'center' },
+  typeBtn: { paddingHorizontal: 16, height: 44, borderRadius: 12, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#27272A', alignItems: 'center', justifyContent: 'center', marginRight: 8 },
+  currBtnActive: { backgroundColor: '#6366F1', borderColor: '#6366F1' },
+  currBtnText: { fontSize: 14, fontWeight: '600', color: '#52525B' },
+  currBtnTextActive: { color: '#FAFAFA' },
 });
