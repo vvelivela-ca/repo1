@@ -25,6 +25,10 @@ interface ImportedHolding {
   symbol: string;
   shares: number;
   avg_price: number;
+  currency?: string;
+  asset_type?: string;
+  exchange?: string;
+  _action?: string;
 }
 
 export default function ImportFile() {
@@ -32,8 +36,7 @@ export default function ImportFile() {
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
   const [selectedPortfolio, setSelectedPortfolio] = useState<string>('');
   const [importing, setImporting] = useState(false);
-  const [result, setResult] = useState<{ count: number; holdings: ImportedHolding[]; message?: string } | null>(null);
-  const [selectedType, setSelectedType] = useState<'csv' | 'pdf' | 'excel'>('csv');
+  const [result, setResult] = useState<{ count: number; holdings: ImportedHolding[]; message?: string; raw_text_preview?: string } | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -55,17 +58,9 @@ export default function ImportFile() {
     }
 
     try {
-      let mimeTypes: string[];
-      if (selectedType === 'csv') {
-        mimeTypes = ['text/csv', 'text/comma-separated-values', 'application/vnd.ms-excel', '*/*'];
-      } else if (selectedType === 'excel') {
-        mimeTypes = ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel', '*/*'];
-      } else {
-        mimeTypes = ['application/pdf', '*/*'];
-      }
-
+      // Accept any file type - backend will auto-detect
       const docResult = await DocumentPicker.getDocumentAsync({
-        type: mimeTypes,
+        type: '*/*',
         copyToCacheDirectory: true,
       });
 
@@ -79,28 +74,15 @@ export default function ImportFile() {
       const formData = new FormData();
       formData.append('portfolio_id', selectedPortfolio);
       
-      let fileName = file.name || 'import';
-      let mimeType = file.mimeType || 'application/octet-stream';
-      if (selectedType === 'csv') {
-        fileName = fileName.endsWith('.csv') ? fileName : 'import.csv';
-        mimeType = 'text/csv';
-      } else if (selectedType === 'excel') {
-        fileName = fileName.endsWith('.xlsx') ? fileName : 'import.xlsx';
-        mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-      } else {
-        fileName = fileName.endsWith('.pdf') ? fileName : 'statement.pdf';
-        mimeType = 'application/pdf';
-      }
-      
       const fileBlob = {
         uri: file.uri,
-        name: fileName,
-        type: mimeType,
+        name: file.name || 'import_file',
+        type: file.mimeType || 'application/octet-stream',
       } as any;
       formData.append('file', fileBlob);
 
-      const endpoint = selectedType === 'csv' ? '/api/holdings/import-csv' : selectedType === 'excel' ? '/api/holdings/import-excel' : '/api/holdings/import-pdf';
-      const res = await fetch(`${API_URL}${endpoint}`, {
+      // Use universal import endpoint
+      const res = await fetch(`${API_URL}/api/holdings/import`, {
         method: 'POST',
         body: formData,
       });
@@ -112,7 +94,12 @@ export default function ImportFile() {
       }
 
       const data = await res.json();
-      setResult({ count: data.imported_count, holdings: data.holdings, message: data.message });
+      setResult({ 
+        count: data.imported_count, 
+        holdings: data.holdings, 
+        message: data.message,
+        raw_text_preview: data.raw_text_preview 
+      });
     } catch (err) {
       console.error('Import error:', err);
       Alert.alert('Error', 'Failed to import file');
@@ -133,103 +120,68 @@ export default function ImportFile() {
           <View style={{ width: 44 }} />
         </View>
 
-        {/* File Type Toggle */}
-        <View style={styles.toggleRow}>
-          <TouchableOpacity
-            testID="toggle-csv"
-            style={[styles.toggleBtn, selectedType === 'csv' && styles.toggleBtnActive]}
-            onPress={() => setSelectedType('csv')}
-            activeOpacity={0.7}
-          >
-            <Feather name="file-text" size={16} color={selectedType === 'csv' ? '#FAFAFA' : '#52525B'} />
-            <Text style={[styles.toggleText, selectedType === 'csv' && styles.toggleTextActive]}>CSV</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            testID="toggle-excel"
-            style={[styles.toggleBtn, selectedType === 'excel' && styles.toggleBtnActive]}
-            onPress={() => setSelectedType('excel')}
-            activeOpacity={0.7}
-          >
-            <Feather name="grid" size={16} color={selectedType === 'excel' ? '#FAFAFA' : '#52525B'} />
-            <Text style={[styles.toggleText, selectedType === 'excel' && styles.toggleTextActive]}>Excel</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            testID="toggle-pdf"
-            style={[styles.toggleBtn, selectedType === 'pdf' && styles.toggleBtnActive]}
-            onPress={() => setSelectedType('pdf')}
-            activeOpacity={0.7}
-          >
-            <Feather name="file" size={16} color={selectedType === 'pdf' ? '#FAFAFA' : '#52525B'} />
-            <Text style={[styles.toggleText, selectedType === 'pdf' && styles.toggleTextActive]}>PDF</Text>
-          </TouchableOpacity>
+        {/* Main Info Card */}
+        <View style={styles.mainCard}>
+          <View style={styles.iconContainer}>
+            <Feather name="upload-cloud" size={48} color="#6366F1" />
+          </View>
+          <Text style={styles.mainTitle}>Smart Import</Text>
+          <Text style={styles.mainSubtitle}>Upload any file - we'll auto-detect the format</Text>
         </View>
 
-        {/* Info Card */}
-        {selectedType === 'csv' ? (
-          <View style={styles.infoCard}>
-            <Feather name="info" size={20} color="#60A5FA" />
-            <View style={styles.infoContent}>
-              <Text style={styles.infoTitle}>CSV Format</Text>
-              <Text style={styles.infoText}>Your CSV should have columns for:</Text>
-              <Text style={styles.infoColumns}>Symbol, Shares, Avg Price</Text>
-              <Text style={styles.infoText}>Also supports: Ticker, Quantity, Cost, Book Cost Per Share</Text>
+        {/* Supported Formats */}
+        <View style={styles.formatsCard}>
+          <Text style={styles.formatsTitle}>Supported Formats</Text>
+          <View style={styles.formatsList}>
+            <View style={styles.formatItem}>
+              <View style={[styles.formatIcon, { backgroundColor: 'rgba(96, 165, 250, 0.15)' }]}>
+                <Feather name="file-text" size={20} color="#60A5FA" />
+              </View>
+              <View style={styles.formatInfo}>
+                <Text style={styles.formatName}>CSV / TXT</Text>
+                <Text style={styles.formatDesc}>Comma or tab separated</Text>
+              </View>
+            </View>
+            <View style={styles.formatItem}>
+              <View style={[styles.formatIcon, { backgroundColor: 'rgba(74, 222, 128, 0.15)' }]}>
+                <Feather name="grid" size={20} color="#4ADE80" />
+              </View>
+              <View style={styles.formatInfo}>
+                <Text style={styles.formatName}>Excel (.xlsx)</Text>
+                <Text style={styles.formatDesc}>Spreadsheet files</Text>
+              </View>
+            </View>
+            <View style={styles.formatItem}>
+              <View style={[styles.formatIcon, { backgroundColor: 'rgba(167, 139, 250, 0.15)' }]}>
+                <Feather name="file" size={20} color="#A78BFA" />
+              </View>
+              <View style={styles.formatInfo}>
+                <Text style={styles.formatName}>PDF</Text>
+                <Text style={styles.formatDesc}>AI-powered parsing</Text>
+              </View>
             </View>
           </View>
-        ) : selectedType === 'excel' ? (
-          <View style={styles.infoCard}>
-            <Feather name="info" size={20} color="#4ADE80" />
-            <View style={styles.infoContent}>
-              <Text style={styles.infoTitle}>Excel Format (.xlsx)</Text>
-              <Text style={styles.infoText}>Your Excel file should have columns for:</Text>
-              <Text style={styles.infoColumns}>Symbol, Shares, Avg Price</Text>
-              <Text style={styles.infoText}>Optional columns: Currency, Asset Type, Exchange</Text>
-            </View>
-          </View>
-        ) : (
-          <View style={styles.infoCard}>
-            <Feather name="info" size={20} color="#A78BFA" />
-            <View style={styles.infoContent}>
-              <Text style={styles.infoTitle}>AI-Powered PDF Parsing</Text>
-              <Text style={styles.infoText}>Upload any brokerage statement — our AI reads and extracts holdings automatically.</Text>
-              <Text style={styles.infoText}>Works with any format: Wealthsimple, Fidelity, Schwab, Questrade, and more.</Text>
-              <Text style={[styles.infoText, { color: '#4ADE80', marginTop: 6 }]}>Powered by GPT — handles messy tables, currency formats, and non-standard layouts.</Text>
-            </View>
-          </View>
-        )}
+        </View>
 
-        {/* Brokerage Tips */}
-        <View style={styles.tipsCard}>
-          <Text style={styles.tipsTitle}>
-            {selectedType === 'csv' ? 'Export CSV from:' : selectedType === 'excel' ? 'Export Excel from:' : 'Download PDF from:'}
-          </Text>
-          {selectedType === 'csv' || selectedType === 'excel' ? (
-            [
-              { name: 'Wealthsimple', steps: 'Activity → Export' },
-              { name: 'Fidelity', steps: 'Positions → Download' },
-              { name: 'Schwab', steps: 'Accounts → Export' },
-              { name: 'TD Ameritrade', steps: 'My Account → Export Positions' },
-              { name: 'Interactive Brokers', steps: 'Reports → Flex Queries' },
-            ].map((b, i) => (
-              <View key={i} style={styles.tipRow}>
-                <Text style={styles.tipBrokerage}>{b.name}</Text>
-                <Text style={styles.tipSteps}>{b.steps}</Text>
-              </View>
-            ))
-          ) : (
-            [
-              { name: 'Wealthsimple', steps: 'Documents → Account Statements' },
-              { name: 'Fidelity', steps: 'Statements → Download PDF' },
-              { name: 'Schwab', steps: 'Statements → Brokerage Statement' },
-              { name: 'TD Ameritrade', steps: 'Statements → Account Statement' },
-              { name: 'Interactive Brokers', steps: 'Reports → Statements → PDF' },
-              { name: 'Questrade', steps: 'Reports → Account Statements' },
-            ].map((b, i) => (
-              <View key={i} style={styles.tipRow}>
-                <Text style={styles.tipBrokerage}>{b.name}</Text>
-                <Text style={styles.tipSteps}>{b.steps}</Text>
-              </View>
-            ))
-          )}
+        {/* Smart Features */}
+        <View style={styles.featuresCard}>
+          <Text style={styles.featuresTitle}>Smart Features</Text>
+          <View style={styles.featureItem}>
+            <Feather name="globe" size={18} color="#6366F1" />
+            <Text style={styles.featureText}>Auto-detects exchange (NYSE, TSX, NSE, etc.)</Text>
+          </View>
+          <View style={styles.featureItem}>
+            <Feather name="dollar-sign" size={18} color="#6366F1" />
+            <Text style={styles.featureText}>Auto-detects currency (USD, CAD, INR, EUR)</Text>
+          </View>
+          <View style={styles.featureItem}>
+            <Feather name="layers" size={18} color="#6366F1" />
+            <Text style={styles.featureText}>Auto-detects asset type (Stock, ETF, Crypto)</Text>
+          </View>
+          <View style={styles.featureItem}>
+            <Feather name="zap" size={18} color="#6366F1" />
+            <Text style={styles.featureText}>Flexible column names in CSV/Excel</Text>
+          </View>
         </View>
 
         {/* Portfolio Selector */}
@@ -256,9 +208,7 @@ export default function ImportFile() {
           ) : (
             <View style={styles.importBtnInner}>
               <Feather name="upload" size={20} color="#09090B" />
-              <Text style={styles.importBtnText}>
-                {selectedType === 'csv' ? 'Select CSV File' : selectedType === 'excel' ? 'Select Excel File' : 'Select PDF Statement'}
-              </Text>
+              <Text style={styles.importBtnText}>Select File to Import</Text>
             </View>
           )}
         </TouchableOpacity>
@@ -270,20 +220,37 @@ export default function ImportFile() {
               <>
                 <Feather name="check-circle" size={24} color="#4ADE80" />
                 <Text style={styles.resultTitle}>Imported {result.count} holdings!</Text>
-                {result.holdings.map((h, i) => (
+                {result.holdings.slice(0, 10).map((h, i) => (
                   <View key={i} style={styles.resultRow}>
-                    <Text style={styles.resultSymbol}>{h.symbol}</Text>
-                    <Text style={styles.resultDetail}>{h.shares} shares @ ${h.avg_price.toFixed(2)}</Text>
+                    <View style={styles.resultLeft}>
+                      <Text style={styles.resultSymbol}>{h.symbol}</Text>
+                      <Text style={styles.resultMeta}>
+                        {h.exchange || 'Unknown'} • {h.currency || 'USD'} • {h.asset_type || 'Stock'}
+                      </Text>
+                    </View>
+                    <View style={styles.resultRight}>
+                      <Text style={styles.resultShares}>{h.shares} shares</Text>
+                      {h.avg_price > 0 && <Text style={styles.resultPrice}>@ ${h.avg_price.toFixed(2)}</Text>}
+                    </View>
                   </View>
                 ))}
+                {result.holdings.length > 10 && (
+                  <Text style={styles.moreText}>+{result.holdings.length - 10} more...</Text>
+                )}
               </>
             ) : (
               <>
                 <Feather name="alert-circle" size={24} color="#FACC15" />
                 <Text style={styles.resultTitleWarn}>No holdings detected</Text>
                 <Text style={styles.resultMessage}>
-                  {result.message || 'The file format may not be supported. Try CSV format or add holdings manually.'}
+                  {result.message || 'The file format may not be supported. Make sure your file has Symbol and Shares columns.'}
                 </Text>
+                {result.raw_text_preview && (
+                  <View style={styles.previewBox}>
+                    <Text style={styles.previewLabel}>File preview:</Text>
+                    <Text style={styles.previewText}>{result.raw_text_preview.substring(0, 300)}...</Text>
+                  </View>
+                )}
               </>
             )}
             <TouchableOpacity testID="go-to-dashboard-btn" style={styles.doneBtn} onPress={() => router.back()} activeOpacity={0.7}>
@@ -304,37 +271,46 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12 },
   backBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#18181B', alignItems: 'center', justifyContent: 'center' },
   headerTitle: { fontSize: 20, fontWeight: '700', color: '#FAFAFA' },
-  toggleRow: { flexDirection: 'row', gap: 10, marginTop: 16 },
-  toggleBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 48, borderRadius: 12, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#27272A' },
-  toggleBtnActive: { backgroundColor: '#6366F1', borderColor: '#6366F1' },
-  toggleText: { fontSize: 14, fontWeight: '600', color: '#52525B' },
-  toggleTextActive: { color: '#FAFAFA' },
-  infoCard: { flexDirection: 'row', backgroundColor: 'rgba(96, 165, 250, 0.08)', borderRadius: 14, padding: 16, marginTop: 16, gap: 12, borderWidth: 1, borderColor: 'rgba(96, 165, 250, 0.2)' },
-  infoContent: { flex: 1 },
-  infoTitle: { fontSize: 15, fontWeight: '600', color: '#FAFAFA', marginBottom: 6 },
-  infoText: { fontSize: 13, color: '#A1A1AA', marginBottom: 4 },
-  infoColumns: { fontSize: 13, fontWeight: '600', color: '#60A5FA', fontFamily: MONO, marginBottom: 4 },
-  tipsCard: { backgroundColor: '#18181B', borderRadius: 14, borderWidth: 1, borderColor: '#27272A', padding: 16, marginTop: 16 },
-  tipsTitle: { fontSize: 15, fontWeight: '600', color: '#FAFAFA', marginBottom: 12 },
-  tipRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#1f1f23' },
-  tipBrokerage: { fontSize: 14, fontWeight: '600', color: '#FAFAFA' },
-  tipSteps: { fontSize: 13, color: '#52525B', maxWidth: '55%', textAlign: 'right' },
+  mainCard: { backgroundColor: '#18181B', borderRadius: 16, borderWidth: 1, borderColor: '#27272A', padding: 24, marginTop: 16, alignItems: 'center' },
+  iconContainer: { width: 80, height: 80, borderRadius: 40, backgroundColor: 'rgba(99, 102, 241, 0.1)', alignItems: 'center', justifyContent: 'center', marginBottom: 16 },
+  mainTitle: { fontSize: 22, fontWeight: '700', color: '#FAFAFA', marginBottom: 8 },
+  mainSubtitle: { fontSize: 14, color: '#A1A1AA', textAlign: 'center' },
+  formatsCard: { backgroundColor: '#18181B', borderRadius: 16, borderWidth: 1, borderColor: '#27272A', padding: 20, marginTop: 16 },
+  formatsTitle: { fontSize: 16, fontWeight: '600', color: '#FAFAFA', marginBottom: 16 },
+  formatsList: { gap: 12 },
+  formatItem: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  formatIcon: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  formatInfo: { flex: 1 },
+  formatName: { fontSize: 15, fontWeight: '600', color: '#FAFAFA' },
+  formatDesc: { fontSize: 13, color: '#52525B', marginTop: 2 },
+  featuresCard: { backgroundColor: '#18181B', borderRadius: 16, borderWidth: 1, borderColor: '#27272A', padding: 20, marginTop: 16 },
+  featuresTitle: { fontSize: 16, fontWeight: '600', color: '#FAFAFA', marginBottom: 12 },
+  featureItem: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 },
+  featureText: { fontSize: 14, color: '#A1A1AA', flex: 1 },
   sectionLabel: { fontSize: 14, fontWeight: '600', color: '#A1A1AA', marginTop: 24, marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 },
   portfolioSelector: { gap: 8 },
   portfolioOption: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#18181B', borderRadius: 12, padding: 14, borderWidth: 1, borderColor: '#27272A' },
   portfolioOptionActive: { borderColor: '#6366F1' },
   portfolioOptionText: { fontSize: 15, color: '#52525B', fontWeight: '500' },
   portfolioOptionTextActive: { color: '#FAFAFA' },
-  importBtn: { height: 56, borderRadius: 100, backgroundColor: '#FAFAFA', alignItems: 'center', justifyContent: 'center', marginTop: 24 },
+  importBtn: { height: 56, borderRadius: 100, backgroundColor: '#6366F1', alignItems: 'center', justifyContent: 'center', marginTop: 24 },
   importBtnInner: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  importBtnText: { fontSize: 16, fontWeight: '700', color: '#09090B' },
-  resultCard: { backgroundColor: '#18181B', borderRadius: 14, borderWidth: 1, borderColor: '#27272A', padding: 20, marginTop: 24, alignItems: 'center' },
+  importBtnText: { fontSize: 16, fontWeight: '700', color: '#FAFAFA' },
+  resultCard: { backgroundColor: '#18181B', borderRadius: 16, borderWidth: 1, borderColor: '#27272A', padding: 20, marginTop: 24, alignItems: 'center' },
   resultTitle: { fontSize: 18, fontWeight: '700', color: '#4ADE80', marginTop: 8, marginBottom: 16 },
   resultTitleWarn: { fontSize: 18, fontWeight: '700', color: '#FACC15', marginTop: 8, marginBottom: 8 },
   resultMessage: { fontSize: 14, color: '#A1A1AA', textAlign: 'center', marginBottom: 12 },
-  resultRow: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#1f1f23' },
-  resultSymbol: { fontSize: 14, fontWeight: '700', color: '#FAFAFA' },
-  resultDetail: { fontSize: 13, color: '#A1A1AA', fontFamily: MONO },
+  resultRow: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#1f1f23' },
+  resultLeft: {},
+  resultRight: { alignItems: 'flex-end' },
+  resultSymbol: { fontSize: 15, fontWeight: '700', color: '#FAFAFA' },
+  resultMeta: { fontSize: 12, color: '#52525B', marginTop: 2 },
+  resultShares: { fontSize: 14, color: '#A1A1AA', fontFamily: MONO },
+  resultPrice: { fontSize: 12, color: '#52525B', fontFamily: MONO },
+  moreText: { fontSize: 13, color: '#52525B', marginTop: 8 },
+  previewBox: { backgroundColor: '#0f0f0f', borderRadius: 8, padding: 12, marginTop: 12, width: '100%' },
+  previewLabel: { fontSize: 12, color: '#52525B', marginBottom: 6 },
+  previewText: { fontSize: 11, color: '#71717A', fontFamily: MONO },
   doneBtn: { height: 44, borderRadius: 22, backgroundColor: '#27272A', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24, marginTop: 16 },
   doneBtnText: { fontSize: 14, fontWeight: '600', color: '#FAFAFA' },
 });

@@ -6,7 +6,7 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone
 import yfinance as yf
@@ -32,14 +32,51 @@ api_router = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ── Asset Types ─────────────────────────────────────────
+# ── Asset Types & Exchange Detection ────────────────────
 ASSET_TYPES = ["Stock", "ETF", "Mutual Fund", "Crypto", "Bond", "Real Estate", "Mortgage", "Cash", "Other"]
+
+# Known exchange suffixes for yfinance
+EXCHANGE_SUFFIXES = {
+    # North America
+    "NYSE": "",
+    "NASDAQ": "",
+    "AMEX": "",
+    "TSX": ".TO",      # Toronto Stock Exchange (Canada)
+    "TSXV": ".V",      # TSX Venture Exchange
+    "CSE": ".CN",      # Canadian Securities Exchange
+    # India
+    "NSE": ".NS",      # National Stock Exchange of India
+    "BSE": ".BO",      # Bombay Stock Exchange
+    # Europe
+    "LSE": ".L",       # London Stock Exchange
+    "XETRA": ".DE",    # German Exchange
+    "EURONEXT": ".PA", # Paris
+    # Asia
+    "HKEX": ".HK",     # Hong Kong
+    "SGX": ".SI",      # Singapore
+    "ASX": ".AX",      # Australia
+    # Crypto
+    "CRYPTO": "-USD",
+}
+
+# Currency by exchange
+EXCHANGE_CURRENCIES = {
+    "NYSE": "USD", "NASDAQ": "USD", "AMEX": "USD",
+    "TSX": "CAD", "TSXV": "CAD", "CSE": "CAD",
+    "NSE": "INR", "BSE": "INR",
+    "LSE": "GBP", "XETRA": "EUR", "EURONEXT": "EUR",
+    "HKEX": "HKD", "SGX": "SGD", "ASX": "AUD",
+    "CRYPTO": "USD",
+}
+
+# Common crypto symbols
+CRYPTO_SYMBOLS = {"BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "DOT", "MATIC", "LINK", "AVAX", "SHIB", "LTC", "UNI", "ATOM", "XLM"}
 
 # ── Models ──────────────────────────────────────────────
 
 class PortfolioCreate(BaseModel):
     name: str
-    portfolio_type: str = "Investment"  # Investment, Mortgage, Real Estate, Mixed
+    portfolio_type: str = "Investment"
 
 class PortfolioUpdate(BaseModel):
     name: Optional[str] = None
@@ -56,9 +93,9 @@ class HoldingCreate(BaseModel):
     shares: float
     avg_price: float
     portfolio_id: str
-    currency: str = "USD"
-    asset_type: str = "Stock"
-    exchange: Optional[str] = None  # NYSE, NASDAQ, TSX, NSE, BSE, etc.
+    currency: Optional[str] = None  # Now optional - will auto-detect
+    asset_type: Optional[str] = None  # Now optional - will auto-detect
+    exchange: Optional[str] = None
     notes: Optional[str] = None
 
 class HoldingUpdate(BaseModel):
@@ -83,7 +120,6 @@ class HoldingResponse(BaseModel):
     created_at: str
     updated_at: str
 
-# Mortgage Model
 class MortgageCreate(BaseModel):
     name: str
     portfolio_id: str
@@ -121,41 +157,167 @@ class MortgageResponse(BaseModel):
     created_at: str
     updated_at: str
 
+# ── Smart Ticker Detection ──────────────────────────────
+
+async def detect_ticker_info(symbol: str) -> Dict[str, Any]:
+    """
+    Detect ticker info (exchange, currency, asset type) by trying different exchanges.
+    Returns best match with price data.
+    """
+    symbol = symbol.upper().strip()
+    
+    # If symbol already has exchange suffix, respect it
+    suffix_map = {
+        ".TO": ("TSX", "CAD"),
+        ".V": ("TSXV", "CAD"),
+        ".CN": ("CSE", "CAD"),
+        ".NS": ("NSE", "INR"),
+        ".BO": ("BSE", "INR"),
+        ".L": ("LSE", "GBP"),
+        ".DE": ("XETRA", "EUR"),
+        ".PA": ("EURONEXT", "EUR"),
+        ".HK": ("HKEX", "HKD"),
+        ".SI": ("SGX", "SGD"),
+        ".AX": ("ASX", "AUD"),
+    }
+    
+    for suffix, (exchange, currency) in suffix_map.items():
+        if symbol.endswith(suffix):
+            try:
+                ticker = yf.Ticker(symbol)
+                info = ticker.fast_info
+                if hasattr(info, 'last_price') and info.last_price and info.last_price > 0:
+                    # Detect asset type
+                    asset_type = "Stock"
+                    try:
+                        ticker_info = ticker.info
+                        quote_type = ticker_info.get("quoteType", "").upper()
+                        if quote_type == "ETF":
+                            asset_type = "ETF"
+                        elif quote_type == "MUTUALFUND":
+                            asset_type = "Mutual Fund"
+                    except:
+                        pass
+                    return {
+                        "symbol": symbol,
+                        "exchange": exchange,
+                        "currency": currency,
+                        "asset_type": asset_type,
+                        "price": float(info.last_price)
+                    }
+            except:
+                pass
+    
+    # Check if it's crypto
+    base_symbol = symbol.replace("-USD", "").replace("-CAD", "").replace("-INR", "")
+    if base_symbol in CRYPTO_SYMBOLS or "-USD" in symbol or "-CAD" in symbol:
+        crypto_symbol = f"{base_symbol}-USD" if "-" not in symbol else symbol
+        try:
+            ticker = yf.Ticker(crypto_symbol)
+            info = ticker.fast_info
+            if hasattr(info, 'last_price') and info.last_price and info.last_price > 0:
+                return {
+                    "symbol": crypto_symbol,
+                    "exchange": "CRYPTO",
+                    "currency": "USD",
+                    "asset_type": "Crypto",
+                    "price": float(info.last_price)
+                }
+        except:
+            pass
+    
+    # Try US markets first (no suffix)
+    try:
+        ticker = yf.Ticker(symbol)
+        info = ticker.fast_info
+        if hasattr(info, 'last_price') and info.last_price and info.last_price > 0:
+            currency = "USD"
+            asset_type = "Stock"
+            try:
+                ticker_info = ticker.info
+                currency = ticker_info.get("currency", "USD").upper()
+                quote_type = ticker_info.get("quoteType", "").upper()
+                if quote_type == "ETF":
+                    asset_type = "ETF"
+                elif quote_type == "MUTUALFUND":
+                    asset_type = "Mutual Fund"
+            except:
+                pass
+            return {
+                "symbol": symbol,
+                "exchange": "NYSE/NASDAQ",
+                "currency": currency,
+                "asset_type": asset_type,
+                "price": float(info.last_price)
+            }
+    except:
+        pass
+    
+    # Try other exchanges if US didn't work
+    exchanges_to_try = [
+        (".TO", "TSX", "CAD"),
+        (".NS", "NSE", "INR"),
+        (".L", "LSE", "GBP"),
+        (".DE", "XETRA", "EUR"),
+    ]
+    
+    for suffix, exchange, default_currency in exchanges_to_try:
+        try_symbol = f"{symbol}{suffix}"
+        try:
+            ticker = yf.Ticker(try_symbol)
+            info = ticker.fast_info
+            if hasattr(info, 'last_price') and info.last_price and info.last_price > 0:
+                currency = default_currency
+                asset_type = "Stock"
+                try:
+                    ticker_info = ticker.info
+                    currency = ticker_info.get("currency", default_currency).upper()
+                    quote_type = ticker_info.get("quoteType", "").upper()
+                    if quote_type == "ETF":
+                        asset_type = "ETF"
+                    elif quote_type == "MUTUALFUND":
+                        asset_type = "Mutual Fund"
+                except:
+                    pass
+                return {
+                    "symbol": try_symbol,
+                    "exchange": exchange,
+                    "currency": currency,
+                    "asset_type": asset_type,
+                    "price": float(info.last_price)
+                }
+        except:
+            continue
+    
+    # Default fallback
+    return {
+        "symbol": symbol,
+        "exchange": None,
+        "currency": "USD",
+        "asset_type": "Stock",
+        "price": 0
+    }
+
 # ── Seed Data ───────────────────────────────────────────
 
 SEED_HOLDINGS = [
-    {"symbol": "AAPL", "shares": 65, "avg_price": 105.88, "currency": "USD", "asset_type": "Stock", "exchange": "NASDAQ"},
-    {"symbol": "QQQ", "shares": 75, "avg_price": 371.92, "currency": "USD", "asset_type": "ETF", "exchange": "NASDAQ"},
-    {"symbol": "TSLA", "shares": 100, "avg_price": 161.64, "currency": "USD", "asset_type": "Stock", "exchange": "NASDAQ"},
-    {"symbol": "MSFT", "shares": 25, "avg_price": 329.72, "currency": "USD", "asset_type": "Stock", "exchange": "NASDAQ"},
-    {"symbol": "GOOGL", "shares": 60, "avg_price": 130.33, "currency": "USD", "asset_type": "Stock", "exchange": "NASDAQ"},
-    {"symbol": "BTC-USD", "shares": 0.5, "avg_price": 42000, "currency": "USD", "asset_type": "Crypto", "exchange": "Crypto"},
-    {"symbol": "ETH-USD", "shares": 5, "avg_price": 2200, "currency": "USD", "asset_type": "Crypto", "exchange": "Crypto"},
+    {"symbol": "AAPL", "shares": 65, "avg_price": 105.88},
+    {"symbol": "QQQ", "shares": 75, "avg_price": 371.92},
+    {"symbol": "TSLA", "shares": 100, "avg_price": 161.64},
+    {"symbol": "MSFT", "shares": 25, "avg_price": 329.72},
+    {"symbol": "GOOGL", "shares": 60, "avg_price": 130.33},
+    {"symbol": "BTC-USD", "shares": 0.5, "avg_price": 42000},
+    {"symbol": "ETH-USD", "shares": 5, "avg_price": 2200},
 ]
 
 @app.on_event("startup")
 async def seed_data():
-    # Migrate: add new fields to existing holdings
-    await db.holdings.update_many(
-        {"currency": {"$exists": False}},
-        {"$set": {"currency": "USD"}}
-    )
-    await db.holdings.update_many(
-        {"asset_type": {"$exists": False}},
-        {"$set": {"asset_type": "Stock"}}
-    )
-    await db.holdings.update_many(
-        {"exchange": {"$exists": False}},
-        {"$set": {"exchange": None}}
-    )
-    await db.holdings.update_many(
-        {"notes": {"$exists": False}},
-        {"$set": {"notes": None}}
-    )
-    await db.portfolios.update_many(
-        {"portfolio_type": {"$exists": False}},
-        {"$set": {"portfolio_type": "Investment"}}
-    )
+    # Migrate existing holdings
+    await db.holdings.update_many({"currency": {"$exists": False}}, {"$set": {"currency": "USD"}})
+    await db.holdings.update_many({"asset_type": {"$exists": False}}, {"$set": {"asset_type": "Stock"}})
+    await db.holdings.update_many({"exchange": {"$exists": False}}, {"$set": {"exchange": None}})
+    await db.holdings.update_many({"notes": {"$exists": False}}, {"$set": {"notes": None}})
+    await db.portfolios.update_many({"portfolio_type": {"$exists": False}}, {"$set": {"portfolio_type": "Investment"}})
 
     portfolio_count = await db.portfolios.count_documents({})
     if portfolio_count == 0:
@@ -169,14 +331,16 @@ async def seed_data():
             "created_at": now,
         })
         for h in SEED_HOLDINGS:
+            # Auto-detect ticker info
+            ticker_info = await detect_ticker_info(h["symbol"])
             doc = {
                 "id": str(uuid.uuid4()),
-                "symbol": h["symbol"],
+                "symbol": ticker_info["symbol"],
                 "shares": h["shares"],
                 "avg_price": h["avg_price"],
-                "currency": h.get("currency", "USD"),
-                "asset_type": h.get("asset_type", "Stock"),
-                "exchange": h.get("exchange"),
+                "currency": ticker_info["currency"],
+                "asset_type": ticker_info["asset_type"],
+                "exchange": ticker_info["exchange"],
                 "notes": None,
                 "portfolio_id": default_id,
                 "created_at": now,
@@ -232,7 +396,7 @@ async def delete_portfolio(portfolio_id: str):
     await db.mortgages.delete_many({"portfolio_id": portfolio_id})
     return {"message": "Portfolio and its holdings deleted"}
 
-# ── Holdings CRUD ───────────────────────────────────────
+# ── Holdings CRUD with Auto-Detection ───────────────────
 
 @api_router.get("/holdings", response_model=List[HoldingResponse])
 async def get_holdings(portfolio_id: Optional[str] = None, asset_type: Optional[str] = None):
@@ -249,15 +413,19 @@ async def create_holding(data: HoldingCreate):
     portfolio = await db.portfolios.find_one({"id": data.portfolio_id}, {"_id": 0})
     if not portfolio:
         raise HTTPException(status_code=404, detail="Portfolio not found")
+    
+    # Auto-detect ticker info if not provided
+    ticker_info = await detect_ticker_info(data.symbol)
+    
     now = datetime.now(timezone.utc).isoformat()
     doc = {
         "id": str(uuid.uuid4()),
-        "symbol": data.symbol.upper().strip(),
+        "symbol": ticker_info["symbol"],
         "shares": data.shares,
         "avg_price": data.avg_price,
-        "currency": data.currency.upper().strip(),
-        "asset_type": data.asset_type,
-        "exchange": data.exchange,
+        "currency": data.currency.upper().strip() if data.currency else ticker_info["currency"],
+        "asset_type": data.asset_type if data.asset_type else ticker_info["asset_type"],
+        "exchange": data.exchange if data.exchange else ticker_info["exchange"],
         "notes": data.notes,
         "portfolio_id": data.portfolio_id,
         "created_at": now,
@@ -297,6 +465,14 @@ async def delete_holding(holding_id: str):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Holding not found")
     return {"message": "Holding deleted"}
+
+# ── Ticker Lookup API ───────────────────────────────────
+
+@api_router.get("/ticker/lookup/{symbol}")
+async def lookup_ticker(symbol: str):
+    """Look up a ticker and auto-detect exchange, currency, and asset type."""
+    info = await detect_ticker_info(symbol)
+    return info
 
 # ── Mortgage CRUD ───────────────────────────────────────
 
@@ -354,63 +530,220 @@ async def delete_mortgage(mortgage_id: str):
         raise HTTPException(status_code=404, detail="Mortgage not found")
     return {"message": "Mortgage deleted"}
 
-# ── CSV Import ──────────────────────────────────────────
+# ── Universal File Import (CSV, Excel, PDF, TXT) ────────
 
-@api_router.post("/holdings/import-csv")
-async def import_csv(portfolio_id: str = Form(...), file: UploadFile = File(...)):
+async def parse_holdings_from_text(text: str) -> List[Dict]:
+    """Parse holdings from any text format - CSV, tab-separated, or plain text."""
+    holdings = []
+    lines = text.strip().split('\n')
+    
+    # Try to detect format and parse
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Try different delimiters
+        for delimiter in [',', '\t', '|', ';']:
+            parts = [p.strip() for p in line.split(delimiter)]
+            if len(parts) >= 2:
+                # Try to extract symbol and shares
+                symbol = None
+                shares = None
+                avg_price = 0
+                
+                for part in parts:
+                    part = part.strip().upper()
+                    # Check if it looks like a symbol (1-10 chars, alphanumeric with maybe - or .)
+                    if re.match(r'^[A-Z]{1,10}(-[A-Z]{1,5})?(\.[A-Z]{1,3})?$', part):
+                        if symbol is None:
+                            symbol = part
+                    else:
+                        # Try to parse as number
+                        clean = re.sub(r'[,$]', '', part)
+                        try:
+                            num = float(clean)
+                            if shares is None:
+                                shares = num
+                            elif avg_price == 0:
+                                avg_price = num
+                        except:
+                            pass
+                
+                if symbol and shares and shares > 0:
+                    holdings.append({"symbol": symbol, "shares": shares, "avg_price": avg_price})
+                    break
+    
+    return holdings
+
+@api_router.post("/holdings/import")
+async def import_file(portfolio_id: str = Form(...), file: UploadFile = File(...)):
+    """Universal file import - supports CSV, Excel, PDF, and TXT formats."""
     portfolio = await db.portfolios.find_one({"id": portfolio_id}, {"_id": 0})
     if not portfolio:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     content = await file.read()
-    text = content.decode("utf-8")
-    reader = csv.DictReader(io.StringIO(text))
+    filename = (file.filename or "").lower()
+    
+    holdings_data = []
+    message = None
+    
+    # Detect file type and parse
+    if filename.endswith('.xlsx') or filename.endswith('.xls'):
+        # Excel file
+        try:
+            wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+            sheet = wb.active
+            rows = list(sheet.iter_rows(values_only=True))
+            
+            if rows:
+                headers = [str(h).strip().lower() if h else "" for h in rows[0]]
+                
+                def find_col(names):
+                    for name in names:
+                        if name in headers:
+                            return headers.index(name)
+                    return -1
 
+                symbol_idx = find_col(["symbol", "ticker", "stock", "name", "security"])
+                shares_idx = find_col(["shares", "quantity", "qty", "units", "amount"])
+                price_idx = find_col(["avg_price", "avg price", "average price", "cost", "price", "book cost per share", "avg cost"])
+
+                if symbol_idx == -1:
+                    symbol_idx = 0
+                if shares_idx == -1:
+                    shares_idx = 1 if len(headers) > 1 else -1
+
+                for row in rows[1:]:
+                    if not row or len(row) <= max(symbol_idx, shares_idx if shares_idx >= 0 else 0):
+                        continue
+                    
+                    symbol = str(row[symbol_idx] or "").strip().upper()
+                    if not symbol or len(symbol) > 15:
+                        continue
+                    
+                    shares = 0
+                    if shares_idx >= 0 and len(row) > shares_idx and row[shares_idx]:
+                        try:
+                            shares = float(str(row[shares_idx]).replace(",", "").replace("$", ""))
+                        except:
+                            pass
+                    
+                    avg_price = 0
+                    if price_idx >= 0 and len(row) > price_idx and row[price_idx]:
+                        try:
+                            avg_price = float(str(row[price_idx]).replace(",", "").replace("$", ""))
+                        except:
+                            pass
+                    
+                    if shares > 0:
+                        holdings_data.append({"symbol": symbol, "shares": shares, "avg_price": avg_price})
+            
+            wb.close()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Could not read Excel file: {str(e)}")
+    
+    elif filename.endswith('.pdf'):
+        # PDF file - use AI parsing
+        try:
+            pdf = pdfplumber.open(io.BytesIO(content))
+            all_text = ""
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    all_text += page_text + "\n"
+            pdf.close()
+            
+            if not all_text.strip():
+                return {
+                    "imported_count": 0,
+                    "holdings": [],
+                    "message": "Could not extract text from PDF. The file may be image-based or encrypted."
+                }
+            
+            # Use AI to parse
+            holdings_data = await _ai_parse_holdings(all_text)
+            
+            if not holdings_data:
+                # Try simple text parsing as fallback
+                holdings_data = await parse_holdings_from_text(all_text)
+                
+            if not holdings_data:
+                return {
+                    "imported_count": 0,
+                    "holdings": [],
+                    "raw_text_preview": all_text[:1000],
+                    "message": "Could not detect holdings in PDF. Try CSV/Excel format or add manually."
+                }
+        except Exception as e:
+            logger.error(f"PDF parsing error: {e}")
+            raise HTTPException(status_code=400, detail=f"Could not read PDF: {str(e)}")
+    
+    else:
+        # CSV or TXT file
+        try:
+            text = content.decode("utf-8")
+        except:
+            try:
+                text = content.decode("latin-1")
+            except:
+                raise HTTPException(status_code=400, detail="Could not decode file. Please use UTF-8 encoding.")
+        
+        # Try CSV parsing first
+        try:
+            reader = csv.DictReader(io.StringIO(text))
+            fieldnames = [f.strip().lower() for f in (reader.fieldnames or [])]
+            reader.fieldnames = fieldnames
+            
+            for row in reader:
+                symbol = (row.get("symbol") or row.get("ticker") or row.get("stock") or row.get("name") or row.get("security") or "").strip().upper()
+                shares_str = (row.get("shares") or row.get("quantity") or row.get("qty") or row.get("units") or row.get("amount") or "").strip()
+                price_str = (row.get("avg_price") or row.get("avg price") or row.get("average price") or row.get("cost") or row.get("price") or row.get("book cost per share") or "").strip()
+                
+                if not symbol or not shares_str:
+                    continue
+                
+                shares_str = re.sub(r'[,$]', '', shares_str)
+                price_str = re.sub(r'[,$]', '', price_str) if price_str else "0"
+                
+                try:
+                    shares = float(shares_str)
+                    avg_price = float(price_str) if price_str else 0
+                    if shares > 0:
+                        holdings_data.append({"symbol": symbol, "shares": shares, "avg_price": avg_price})
+                except:
+                    pass
+        except:
+            # Fallback to text parsing
+            holdings_data = await parse_holdings_from_text(text)
+    
+    # Import holdings with auto-detection
     imported = []
     now = datetime.now(timezone.utc).isoformat()
-
-    fieldnames = [f.strip().lower() for f in (reader.fieldnames or [])]
-    reader.fieldnames = fieldnames
-
-    for row in reader:
-        symbol = (row.get("symbol") or row.get("ticker") or row.get("stock") or "").strip().upper()
-        shares_str = (row.get("shares") or row.get("quantity") or row.get("qty") or row.get("units") or "").strip()
-        avg_price_str = (row.get("avg_price") or row.get("avg price") or row.get("average price")
-                        or row.get("cost") or row.get("price") or row.get("book cost per share") or "").strip()
-        asset_type = (row.get("asset_type") or row.get("type") or row.get("asset type") or "Stock").strip()
-        exchange = (row.get("exchange") or "").strip()
-
-        if not symbol or not shares_str:
-            continue
-
-        shares_str = shares_str.replace(",", "").replace("$", "")
-        avg_price_str = avg_price_str.replace(",", "").replace("$", "")
-
-        try:
-            shares = float(shares_str)
-            avg_price = float(avg_price_str) if avg_price_str else 0.0
-        except ValueError:
-            continue
-
-        if shares <= 0:
-            continue
-
+    
+    for h in holdings_data:
+        symbol = h["symbol"]
+        
+        # Auto-detect ticker info
+        ticker_info = await detect_ticker_info(symbol)
+        
+        # Check if exists
         existing = await db.holdings.find_one(
-            {"symbol": symbol, "portfolio_id": portfolio_id}, {"_id": 0}
+            {"symbol": ticker_info["symbol"], "portfolio_id": portfolio_id}, {"_id": 0}
         )
-        currency_val = (row.get("currency") or "USD").strip().upper()
-
-        # Normalize asset type
-        asset_type_normalized = "Stock"
-        for at in ASSET_TYPES:
-            if at.lower() in asset_type.lower():
-                asset_type_normalized = at
-                break
-
+        
         if existing:
             await db.holdings.update_one(
                 {"id": existing["id"]},
-                {"$set": {"shares": shares, "avg_price": avg_price, "currency": currency_val, "asset_type": asset_type_normalized, "exchange": exchange or existing.get("exchange"), "updated_at": now}}
+                {"$set": {
+                    "shares": h["shares"],
+                    "avg_price": h["avg_price"] if h["avg_price"] > 0 else existing["avg_price"],
+                    "currency": ticker_info["currency"],
+                    "asset_type": ticker_info["asset_type"],
+                    "exchange": ticker_info["exchange"],
+                    "updated_at": now
+                }}
             )
             updated = await db.holdings.find_one({"id": existing["id"]}, {"_id": 0})
             updated["_action"] = "updated"
@@ -418,12 +751,12 @@ async def import_csv(portfolio_id: str = Form(...), file: UploadFile = File(...)
         else:
             doc = {
                 "id": str(uuid.uuid4()),
-                "symbol": symbol,
-                "shares": shares,
-                "avg_price": avg_price,
-                "currency": currency_val,
-                "asset_type": asset_type_normalized,
-                "exchange": exchange or None,
+                "symbol": ticker_info["symbol"],
+                "shares": h["shares"],
+                "avg_price": h["avg_price"],
+                "currency": ticker_info["currency"],
+                "asset_type": ticker_info["asset_type"],
+                "exchange": ticker_info["exchange"],
                 "notes": None,
                 "portfolio_id": portfolio_id,
                 "created_at": now,
@@ -433,285 +766,109 @@ async def import_csv(portfolio_id: str = Form(...), file: UploadFile = File(...)
             doc.pop("_id", None)
             doc["_action"] = "created"
             imported.append(doc)
+    
+    return {"imported_count": len(imported), "holdings": imported, "message": message}
 
-    return {"imported_count": len(imported), "holdings": imported}
-
-# ── Excel Import ────────────────────────────────────────
+# Keep old endpoints for backward compatibility
+@api_router.post("/holdings/import-csv")
+async def import_csv(portfolio_id: str = Form(...), file: UploadFile = File(...)):
+    return await import_file(portfolio_id=portfolio_id, file=file)
 
 @api_router.post("/holdings/import-excel")
 async def import_excel(portfolio_id: str = Form(...), file: UploadFile = File(...)):
-    portfolio = await db.portfolios.find_one({"id": portfolio_id}, {"_id": 0})
-    if not portfolio:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return await import_file(portfolio_id=portfolio_id, file=file)
 
-    content = await file.read()
-    
-    try:
-        wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
-        sheet = wb.active
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not read Excel file: {str(e)}")
+@api_router.post("/holdings/import-pdf")
+async def import_pdf(portfolio_id: str = Form(...), file: UploadFile = File(...)):
+    return await import_file(portfolio_id=portfolio_id, file=file)
 
-    imported = []
-    now = datetime.now(timezone.utc).isoformat()
+# ── AI-Powered PDF Parsing ──────────────────────────────
 
-    # Get headers from first row
-    rows = list(sheet.iter_rows(values_only=True))
-    if not rows:
-        return {"imported_count": 0, "holdings": [], "message": "Empty Excel file"}
-
-    headers = [str(h).strip().lower() if h else "" for h in rows[0]]
-    
-    # Find column indices
-    def find_col(names):
-        for name in names:
-            if name in headers:
-                return headers.index(name)
-        return -1
-
-    symbol_idx = find_col(["symbol", "ticker", "stock"])
-    shares_idx = find_col(["shares", "quantity", "qty", "units"])
-    price_idx = find_col(["avg_price", "avg price", "average price", "cost", "price", "book cost per share"])
-    currency_idx = find_col(["currency"])
-    type_idx = find_col(["asset_type", "type", "asset type"])
-    exchange_idx = find_col(["exchange"])
-
-    if symbol_idx == -1 or shares_idx == -1:
-        return {"imported_count": 0, "holdings": [], "message": "Could not find Symbol/Shares columns"}
-
-    for row in rows[1:]:
-        if not row or len(row) <= max(symbol_idx, shares_idx):
-            continue
-
-        symbol = str(row[symbol_idx] or "").strip().upper()
-        shares_val = row[shares_idx]
-        
-        if not symbol or shares_val is None:
-            continue
-
-        try:
-            shares = float(str(shares_val).replace(",", "").replace("$", ""))
-        except:
-            continue
-
-        if shares <= 0:
-            continue
-
-        avg_price = 0.0
-        if price_idx >= 0 and len(row) > price_idx and row[price_idx]:
-            try:
-                avg_price = float(str(row[price_idx]).replace(",", "").replace("$", ""))
-            except:
-                pass
-
-        currency_val = "USD"
-        if currency_idx >= 0 and len(row) > currency_idx and row[currency_idx]:
-            currency_val = str(row[currency_idx]).strip().upper()
-
-        asset_type = "Stock"
-        if type_idx >= 0 and len(row) > type_idx and row[type_idx]:
-            type_str = str(row[type_idx]).strip()
-            for at in ASSET_TYPES:
-                if at.lower() in type_str.lower():
-                    asset_type = at
-                    break
-
-        exchange = None
-        if exchange_idx >= 0 and len(row) > exchange_idx and row[exchange_idx]:
-            exchange = str(row[exchange_idx]).strip()
-
-        existing = await db.holdings.find_one(
-            {"symbol": symbol, "portfolio_id": portfolio_id}, {"_id": 0}
-        )
-
-        if existing:
-            await db.holdings.update_one(
-                {"id": existing["id"]},
-                {"$set": {"shares": shares, "avg_price": avg_price, "currency": currency_val, "asset_type": asset_type, "exchange": exchange or existing.get("exchange"), "updated_at": now}}
-            )
-            updated = await db.holdings.find_one({"id": existing["id"]}, {"_id": 0})
-            updated["_action"] = "updated"
-            imported.append(updated)
-        else:
-            doc = {
-                "id": str(uuid.uuid4()),
-                "symbol": symbol,
-                "shares": shares,
-                "avg_price": avg_price,
-                "currency": currency_val,
-                "asset_type": asset_type,
-                "exchange": exchange,
-                "notes": None,
-                "portfolio_id": portfolio_id,
-                "created_at": now,
-                "updated_at": now,
-            }
-            await db.holdings.insert_one(doc)
-            doc.pop("_id", None)
-            doc["_action"] = "created"
-            imported.append(doc)
-
-    wb.close()
-    return {"imported_count": len(imported), "holdings": imported}
-
-# ── PDF Import (AI-Powered) ─────────────────────────────
-
-async def _ai_parse_holdings(text: str) -> list:
-    """Use GPT to intelligently extract holdings from any PDF text format."""
+async def _ai_parse_holdings(text: str) -> List[Dict]:
+    """Use GPT to intelligently extract holdings from any document text."""
     api_key = os.environ.get('EMERGENT_LLM_KEY')
     if not api_key:
+        logger.warning("EMERGENT_LLM_KEY not set - PDF AI parsing disabled")
         return []
 
-    chat = LlmChat(
-        api_key=api_key,
-        session_id=f"pdf-parse-{uuid.uuid4()}",
-        system_message="""You are a financial document parser. Extract stock/ETF/crypto/mutual fund holdings from brokerage statements.
+    try:
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=f"pdf-parse-{uuid.uuid4()}",
+            system_message="""You are a financial document parser. Extract ALL stock/ETF/crypto/mutual fund holdings from brokerage statements, account summaries, or portfolio reports.
 
 Return ONLY a valid JSON array. Each item must have:
-- "symbol": ticker (e.g. "AAPL", "QQQ", "BTC-USD") - uppercase
+- "symbol": ticker symbol (e.g. "AAPL", "QQQ", "SHOP.TO", "BTC-USD", "RELIANCE.NS") - uppercase, include exchange suffix if present
 - "shares": number of shares/units (float)
-- "avg_price": average cost per share (float, 0 if not found)
-- "currency": "USD", "CAD", or "INR" (detect from context)
-- "asset_type": "Stock", "ETF", "Mutual Fund", "Crypto", "Bond", or "Other"
+- "avg_price": average cost per share (float, use 0 if not found)
 
-Rules:
-- Only include actual holdings (not cash balances or headers)
-- For crypto, use format like BTC-USD, ETH-USD
-- If you see "quantity" or "units", that's the shares count
-- If only total cost shown, divide by shares for avg_price
-- Return ONLY the JSON array, nothing else"""
-    ).with_model("openai", "gpt-4o")
+IMPORTANT RULES:
+1. Extract ALL holdings you can find - stocks, ETFs, mutual funds, crypto
+2. For Canadian stocks, keep the .TO or .V suffix if present
+3. For Indian stocks, keep the .NS or .BO suffix if present
+4. For crypto, use format like BTC-USD, ETH-USD
+5. If you see "quantity", "units", "shares" - that's the shares count
+6. If you see "book cost", "avg cost", "average price" - that's the avg_price
+7. Ignore cash balances, totals, and non-holding entries
+8. Return EMPTY array [] if no holdings found
+9. Return ONLY the JSON array - no explanation"""
+        ).with_model("openai", "gpt-4o")
 
-    try:
-        truncated_text = text[:8000] if len(text) > 8000 else text
+        # Truncate text to avoid token limits
+        truncated_text = text[:12000] if len(text) > 12000 else text
+        
         user_msg = UserMessage(
-            text=f"Extract all holdings from this brokerage statement:\n\n{truncated_text}"
+            text=f"Extract ALL stock/ETF/crypto holdings from this document. Return JSON array:\n\n{truncated_text}"
         )
+        
         response = await chat.send_message(user_msg)
-
         response_text = response.strip()
-        if response_text.startswith("```"):
-            response_text = response_text.split("```")[1]
-            if response_text.startswith("json"):
-                response_text = response_text[4:]
-            response_text = response_text.strip()
-
+        
+        # Handle markdown code blocks
+        if "```" in response_text:
+            match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response_text)
+            if match:
+                response_text = match.group(1).strip()
+        
+        # Try to find JSON array in response
+        if not response_text.startswith('['):
+            match = re.search(r'\[[\s\S]*\]', response_text)
+            if match:
+                response_text = match.group(0)
+        
         parsed = json_module.loads(response_text)
         if not isinstance(parsed, list):
             return []
 
+        # Validate entries
         results = []
         for item in parsed:
             sym = str(item.get("symbol", "")).strip().upper()
             shares = float(item.get("shares", 0))
             avg_price = float(item.get("avg_price", 0))
-            currency = str(item.get("currency", "USD")).strip().upper()
-            asset_type = str(item.get("asset_type", "Stock")).strip()
             
-            if currency not in ("USD", "CAD", "INR"):
-                currency = "USD"
-            
-            # Normalize asset type
-            asset_type_normalized = "Stock"
-            for at in ASSET_TYPES:
-                if at.lower() in asset_type.lower():
-                    asset_type_normalized = at
-                    break
-            
-            if sym and shares > 0:
+            # Basic validation
+            if sym and shares > 0 and len(sym) <= 15:
                 results.append({
-                    "symbol": sym, 
-                    "shares": shares, 
-                    "avg_price": avg_price, 
-                    "currency": currency,
-                    "asset_type": asset_type_normalized
+                    "symbol": sym,
+                    "shares": shares,
+                    "avg_price": avg_price
                 })
+        
+        logger.info(f"AI parsed {len(results)} holdings from PDF")
         return results
+        
     except Exception as e:
         logger.error(f"AI parsing error: {e}")
         return []
-
-@api_router.post("/holdings/import-pdf")
-async def import_pdf(portfolio_id: str = Form(...), file: UploadFile = File(...)):
-    portfolio = await db.portfolios.find_one({"id": portfolio_id}, {"_id": 0})
-    if not portfolio:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
-
-    content = await file.read()
-
-    try:
-        pdf = pdfplumber.open(io.BytesIO(content))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not read PDF: {str(e)}")
-
-    all_text = ""
-    for page in pdf.pages:
-        page_text = page.extract_text()
-        if page_text:
-            all_text += page_text + "\n"
-    pdf.close()
-
-    if not all_text.strip():
-        return {
-            "imported_count": 0,
-            "holdings": [],
-            "message": "Could not extract text from PDF. The file may be image-based or encrypted."
-        }
-
-    parsed = await _ai_parse_holdings(all_text)
-
-    if not parsed:
-        return {
-            "imported_count": 0,
-            "holdings": [],
-            "raw_text_preview": all_text[:500],
-            "message": "AI could not detect holdings in this document. Try CSV/Excel format or add manually."
-        }
-
-    imported = []
-    now = datetime.now(timezone.utc).isoformat()
-    for h in parsed:
-        symbol = h["symbol"]
-        existing = await db.holdings.find_one(
-            {"symbol": symbol, "portfolio_id": portfolio_id}, {"_id": 0}
-        )
-
-        if existing:
-            await db.holdings.update_one(
-                {"id": existing["id"]},
-                {"$set": {"shares": h["shares"], "avg_price": h["avg_price"], "currency": h["currency"], "asset_type": h["asset_type"], "updated_at": now}}
-            )
-            updated = await db.holdings.find_one({"id": existing["id"]}, {"_id": 0})
-            updated["_action"] = "updated"
-            imported.append(updated)
-        else:
-            doc = {
-                "id": str(uuid.uuid4()),
-                "symbol": symbol,
-                "shares": h["shares"],
-                "avg_price": h["avg_price"],
-                "currency": h["currency"],
-                "asset_type": h["asset_type"],
-                "exchange": None,
-                "notes": None,
-                "portfolio_id": portfolio_id,
-                "created_at": now,
-                "updated_at": now,
-            }
-            await db.holdings.insert_one(doc)
-            doc.pop("_id", None)
-            doc["_action"] = "created"
-            imported.append(doc)
-
-    return {"imported_count": len(imported), "holdings": imported}
 
 # ── Stock Quotes (FREE via yfinance) ────────────────────
 
 @api_router.get("/fx-rates")
 async def get_fx_rates():
-    """Fetch live FX rates for USD/CAD, USD/INR using yfinance (FREE)."""
+    """Fetch live FX rates using yfinance (FREE)."""
     rates = {"USD": 1.0}
-    pairs = {"CAD": "USDCAD=X", "INR": "USDINR=X"}
+    pairs = {"CAD": "USDCAD=X", "INR": "USDINR=X", "GBP": "USDGBP=X", "EUR": "USDEUR=X"}
     for currency, symbol in pairs.items():
         try:
             ticker = yf.Ticker(symbol)
@@ -720,86 +877,47 @@ async def get_fx_rates():
             rates[currency] = round(rate, 4)
         except Exception as e:
             logger.warning(f"Error fetching FX rate {symbol}: {e}")
-            rates[currency] = 1.44 if currency == "CAD" else 84.5
+            # Fallback rates
+            fallbacks = {"CAD": 1.36, "INR": 84.5, "GBP": 0.79, "EUR": 0.92}
+            rates[currency] = fallbacks.get(currency, 1)
     return rates
 
 @api_router.get("/stocks/quotes")
 async def get_stock_quotes(symbols: str, currencies: str = ""):
-    """Fetch live quotes using yfinance (FREE). Supports stocks, ETFs, mutual funds, crypto."""
+    """Fetch live quotes using yfinance (FREE)."""
     symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-    currency_list = [c.strip().upper() for c in currencies.split(",")] if currencies else []
     if not symbol_list:
         return {}
 
-    sym_currencies = {}
-    for i, sym in enumerate(symbol_list):
-        sym_currencies[sym] = currency_list[i] if i < len(currency_list) else "USD"
-
     quotes = {}
-    yahoo_to_original = {}
-    yahoo_symbols = []
     
     for sym in symbol_list:
-        cur = sym_currencies.get(sym, "USD")
-        # Handle different exchanges and asset types
-        if "." in sym or "-" in sym:
-            # Already has suffix (crypto like BTC-USD, or exchange like SHOP.TO)
-            yahoo_symbols.append(sym)
-            yahoo_to_original[sym] = sym
-        elif cur == "CAD":
-            yahoo_sym = f"{sym}.TO"
-            yahoo_symbols.append(yahoo_sym)
-            yahoo_to_original[yahoo_sym] = sym
-        elif cur == "INR":
-            yahoo_sym = f"{sym}.NS"
-            yahoo_symbols.append(yahoo_sym)
-            yahoo_to_original[yahoo_sym] = sym
-        else:
-            yahoo_symbols.append(sym)
-            yahoo_to_original[sym] = sym
-
-    try:
-        tickers = yf.Tickers(" ".join(yahoo_symbols))
-        for yahoo_sym in yahoo_symbols:
-            original_sym = yahoo_to_original.get(yahoo_sym, yahoo_sym)
+        try:
+            # Use symbol as-is first (it might already have exchange suffix)
+            ticker = yf.Ticker(sym)
+            info = ticker.fast_info
+            price = round(float(info.last_price), 2) if hasattr(info, 'last_price') and info.last_price else 0
+            
+            # Get currency from ticker
+            price_currency = "USD"
             try:
-                ticker = tickers.tickers.get(yahoo_sym)
-                if ticker:
-                    info = ticker.fast_info
-                    price = round(float(info.last_price), 2) if hasattr(info, 'last_price') and info.last_price else 0
-
-                    if price == 0 and "." in yahoo_sym:
-                        bare_sym = yahoo_sym.split(".")[0]
-                        try:
-                            fallback = yf.Ticker(bare_sym)
-                            fb_info = fallback.fast_info
-                            price = round(float(fb_info.last_price), 2) if hasattr(fb_info, 'last_price') and fb_info.last_price else 0
-                            if price > 0:
-                                info = fb_info
-                                ticker = fallback
-                        except:
-                            pass
-
-                    price_currency = sym_currencies.get(original_sym, "USD")
-                    try:
-                        ticker_info = ticker.info
-                        price_currency = ticker_info.get("currency", price_currency).upper()
-                    except:
-                        pass
-
-                    quotes[original_sym] = {
-                        "price": price,
-                        "previous_close": round(float(info.previous_close), 2) if hasattr(info, 'previous_close') and info.previous_close else 0,
-                        "day_high": round(float(info.day_high), 2) if hasattr(info, 'day_high') and info.day_high else 0,
-                        "day_low": round(float(info.day_low), 2) if hasattr(info, 'day_low') and info.day_low else 0,
-                        "market_cap": float(info.market_cap) if hasattr(info, 'market_cap') and info.market_cap else 0,
-                        "quote_currency": price_currency,
-                    }
-            except Exception as e:
-                logger.warning(f"Error fetching quote for {yahoo_sym}: {e}")
-                quotes[original_sym] = {"price": 0, "previous_close": 0, "day_high": 0, "day_low": 0, "market_cap": 0, "quote_currency": "USD"}
-    except Exception as e:
-        logger.error(f"Error fetching quotes: {e}")
+                ticker_info = ticker.info
+                price_currency = ticker_info.get("currency", "USD").upper()
+            except:
+                pass
+            
+            quotes[sym] = {
+                "price": price,
+                "previous_close": round(float(info.previous_close), 2) if hasattr(info, 'previous_close') and info.previous_close else 0,
+                "day_high": round(float(info.day_high), 2) if hasattr(info, 'day_high') and info.day_high else 0,
+                "day_low": round(float(info.day_low), 2) if hasattr(info, 'day_low') and info.day_low else 0,
+                "market_cap": float(info.market_cap) if hasattr(info, 'market_cap') and info.market_cap else 0,
+                "quote_currency": price_currency,
+            }
+        except Exception as e:
+            logger.warning(f"Error fetching quote for {sym}: {e}")
+            quotes[sym] = {"price": 0, "previous_close": 0, "day_high": 0, "day_low": 0, "market_cap": 0, "quote_currency": "USD"}
+    
     return quotes
 
 @api_router.get("/stocks/history/{symbol}")
@@ -828,18 +946,14 @@ async def get_stock_history(symbol: str, period: str = "1mo"):
         logger.error(f"Error fetching history for {symbol}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ── Asset Types ─────────────────────────────────────────
+# ── Asset Types & Summary ───────────────────────────────
 
 @api_router.get("/asset-types")
 async def get_asset_types():
-    """Get list of supported asset types."""
     return {"asset_types": ASSET_TYPES}
-
-# ── Portfolio Summary ───────────────────────────────────
 
 @api_router.get("/portfolio/summary")
 async def get_portfolio_summary(portfolio_id: Optional[str] = None):
-    """Get summary of holdings by asset type."""
     query = {}
     if portfolio_id:
         query["portfolio_id"] = portfolio_id
@@ -852,11 +966,13 @@ async def get_portfolio_summary(portfolio_id: Optional[str] = None):
         "total_mortgages": len(mortgages),
         "by_asset_type": {},
         "by_currency": {},
+        "by_exchange": {},
     }
     
     for h in holdings:
         asset_type = h.get("asset_type", "Stock")
         currency = h.get("currency", "USD")
+        exchange = h.get("exchange") or "Unknown"
         
         if asset_type not in summary["by_asset_type"]:
             summary["by_asset_type"][asset_type] = {"count": 0, "total_value": 0}
@@ -866,6 +982,10 @@ async def get_portfolio_summary(portfolio_id: Optional[str] = None):
         if currency not in summary["by_currency"]:
             summary["by_currency"][currency] = {"count": 0}
         summary["by_currency"][currency]["count"] += 1
+        
+        if exchange not in summary["by_exchange"]:
+            summary["by_exchange"][exchange] = {"count": 0}
+        summary["by_exchange"][exchange]["count"] += 1
     
     return summary
 
@@ -873,7 +993,7 @@ async def get_portfolio_summary(portfolio_id: Optional[str] = None):
 
 @api_router.get("/")
 async def root():
-    return {"message": "Holdings Hub API - 100% FREE"}
+    return {"message": "Holdings Hub API - 100% FREE", "features": ["auto-detect-exchange", "auto-detect-currency", "multi-format-import"]}
 
 @api_router.get("/health")
 async def health():
