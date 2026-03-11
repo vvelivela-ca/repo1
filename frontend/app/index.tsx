@@ -105,32 +105,27 @@ export default function Dashboard() {
   const fetchAllData = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true);
     try {
-      console.log('[Dashboard] Fetching all holdings...');
-      
-      // Always fetch ALL holdings
+      // Fetch holdings and quotes in parallel for faster loading
       const holdingsRes = await fetch(`${API_URL}/api/holdings`);
       const holdingsData: Holding[] = await holdingsRes.json();
-      setAllHoldings(holdingsData);
-      console.log(`[Dashboard] Loaded ${holdingsData.length} holdings`);
       
-      // Fetch quotes for ALL unique symbols
       if (holdingsData.length > 0) {
         const uniqueSymbols = [...new Set(holdingsData.map((h) => h.symbol))];
-        // URL encode each symbol to handle special characters like & in ARE&M.NS
         const encodedSymbols = uniqueSymbols.map(s => encodeURIComponent(s)).join(',');
-        console.log(`[Dashboard] Fetching quotes for ${uniqueSymbols.length} symbols`);
         const quotesRes = await fetch(`${API_URL}/api/stocks/quotes?symbols=${encodedSymbols}`);
         const quotesData = await quotesRes.json();
+        
+        // Update both at once to prevent showing 0's
+        setAllHoldings(holdingsData);
         setQuotes(quotesData);
-        console.log(`[Dashboard] Loaded ${Object.keys(quotesData).length} quotes`);
       } else { 
+        setAllHoldings([]);
         setQuotes({}); 
       }
       
       setLastRefresh(new Date());
     } catch (err) { 
       console.error('Error fetching data:', err);
-      Alert.alert('Error', 'Failed to fetch data. Pull to refresh.');
     }
     finally { 
       setLoading(false); 
@@ -145,21 +140,26 @@ export default function Dashboard() {
     fetchAllData(true);
   }, []);
 
-  // Refresh when screen comes into focus
+  // Only refresh on focus if data is stale (> 30 seconds old)
   useFocusEffect(
     useCallback(() => {
+      if (lastRefresh) {
+        const timeSinceRefresh = Date.now() - lastRefresh.getTime();
+        if (timeSinceRefresh < 30000) {
+          // Data is fresh, skip refresh
+          return;
+        }
+      }
       const task = InteractionManager.runAfterInteractions(() => {
-        console.log('[Dashboard] Screen focused - refreshing data');
         fetchAllData(false);
-        fetchFxRates();
       });
       return () => task.cancel();
-    }, [fetchAllData, fetchFxRates])
+    }, [fetchAllData, lastRefresh])
   );
 
-  // Auto-refresh every 60 seconds
+  // Auto-refresh every 2 minutes (not 60 seconds to reduce API calls)
   useEffect(() => {
-    const interval = setInterval(() => fetchAllData(false), 60000);
+    const interval = setInterval(() => fetchAllData(false), 120000);
     return () => clearInterval(interval);
   }, [fetchAllData]);
 

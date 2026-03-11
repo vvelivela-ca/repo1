@@ -72,6 +72,12 @@ EXCHANGE_CURRENCIES = {
 # Common crypto symbols
 CRYPTO_SYMBOLS = {"BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "DOT", "MATIC", "LINK", "AVAX", "SHIB", "LTC", "UNI", "ATOM", "XLM"}
 
+# ── Quote Cache ─────────────────────────────────────────
+# Simple in-memory cache to avoid rate limiting
+_quote_cache: Dict[str, Any] = {}
+_quote_cache_time: Dict[str, datetime] = {}
+CACHE_TTL_SECONDS = 30  # Cache quotes for 30 seconds
+
 # Common US Mutual Fund tickers (Vanguard, Fidelity, etc.)
 MUTUAL_FUND_TICKERS = {
     # Vanguard
@@ -917,16 +923,27 @@ async def get_fx_rates():
 
 @api_router.get("/stocks/quotes")
 async def get_stock_quotes(symbols: str, currencies: str = ""):
-    """Fetch live quotes using yfinance (FREE)."""
+    """Fetch live quotes using yfinance (FREE) with caching to avoid rate limits."""
     symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     if not symbol_list:
         return {}
 
     quotes = {}
+    now = datetime.now()
+    symbols_to_fetch = []
     
+    # Check cache first
     for sym in symbol_list:
+        if sym in _quote_cache and sym in _quote_cache_time:
+            cache_age = (now - _quote_cache_time[sym]).total_seconds()
+            if cache_age < CACHE_TTL_SECONDS:
+                quotes[sym] = _quote_cache[sym]
+                continue
+        symbols_to_fetch.append(sym)
+    
+    # Fetch only uncached symbols
+    for sym in symbols_to_fetch:
         try:
-            # Use symbol as-is first (it might already have exchange suffix)
             ticker = yf.Ticker(sym)
             info = ticker.fast_info
             price = round(float(info.last_price), 2) if hasattr(info, 'last_price') and info.last_price else 0
@@ -939,7 +956,7 @@ async def get_stock_quotes(symbols: str, currencies: str = ""):
             except:
                 pass
             
-            quotes[sym] = {
+            quote_data = {
                 "price": price,
                 "previous_close": round(float(info.previous_close), 2) if hasattr(info, 'previous_close') and info.previous_close else 0,
                 "day_high": round(float(info.day_high), 2) if hasattr(info, 'day_high') and info.day_high else 0,
@@ -947,9 +964,16 @@ async def get_stock_quotes(symbols: str, currencies: str = ""):
                 "market_cap": float(info.market_cap) if hasattr(info, 'market_cap') and info.market_cap else 0,
                 "quote_currency": price_currency,
             }
+            quotes[sym] = quote_data
+            _quote_cache[sym] = quote_data
+            _quote_cache_time[sym] = now
         except Exception as e:
             logger.warning(f"Error fetching quote for {sym}: {e}")
-            quotes[sym] = {"price": 0, "previous_close": 0, "day_high": 0, "day_low": 0, "market_cap": 0, "quote_currency": "USD"}
+            # Use cached data if available, even if expired
+            if sym in _quote_cache:
+                quotes[sym] = _quote_cache[sym]
+            else:
+                quotes[sym] = {"price": 0, "previous_close": 0, "day_high": 0, "day_low": 0, "market_cap": 0, "quote_currency": "USD"}
     
     return quotes
 
