@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
   Platform,
   ScrollView,
   Alert,
+  InteractionManager,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -57,6 +58,10 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  
+  // Ref to track if component is mounted and prevent stale updates
+  const isMounted = useRef(true);
+  const isFetching = useRef(false);
 
   // Filter by asset type
   const [filterAssetType, setFilterAssetType] = useState<string | null>(null);
@@ -78,11 +83,17 @@ export default function Dashboard() {
     else { setSortKey(key); setSortAsc(false); }
   };
 
+  // Keep selected portfolio in a ref to avoid stale closure issues
+  const selectedPortfolioRef = useRef(selectedPortfolio);
+  useEffect(() => {
+    selectedPortfolioRef.current = selectedPortfolio;
+  }, [selectedPortfolio]);
+
   const fetchPortfolios = useCallback(async () => {
     try {
       const res = await fetch(`${API_URL}/api/portfolios`);
       const data = await res.json();
-      setPortfolios(data);
+      if (isMounted.current) setPortfolios(data);
     } catch (err) { console.error('Error fetching portfolios:', err); }
   }, []);
 
@@ -90,19 +101,29 @@ export default function Dashboard() {
     try {
       const res = await fetch(`${API_URL}/api/fx-rates`);
       const data = await res.json();
-      setFxRates(data);
+      if (isMounted.current) setFxRates(data);
     } catch (err) { console.error('Error fetching FX rates:', err); }
   }, []);
 
-  const fetchData = useCallback(async (showLoading = true) => {
+  // Core data fetching function - uses ref to get current portfolio
+  const fetchData = useCallback(async (showLoading = true, forcePortfolio?: string) => {
+    // Prevent duplicate fetches
+    if (isFetching.current) return;
+    isFetching.current = true;
+    
     if (showLoading) setLoading(true);
     try {
+      // Use forcePortfolio or ref to avoid stale closure
+      const currentPortfolio = forcePortfolio ?? selectedPortfolioRef.current;
+      
       // Fetch holdings
-      const url = selectedPortfolio === 'all' 
+      const url = currentPortfolio === 'all' 
         ? `${API_URL}/api/holdings` 
-        : `${API_URL}/api/holdings?portfolio_id=${selectedPortfolio}`;
+        : `${API_URL}/api/holdings?portfolio_id=${currentPortfolio}`;
       const holdingsRes = await fetch(url);
       const holdingsData: Holding[] = await holdingsRes.json();
+      
+      if (!isMounted.current) return;
       setHoldings(holdingsData);
       
       // Fetch quotes for all holdings
@@ -111,41 +132,64 @@ export default function Dashboard() {
         const symbols = uniqueSymbols.join(',');
         const quotesRes = await fetch(`${API_URL}/api/stocks/quotes?symbols=${symbols}`);
         const quotesData = await quotesRes.json();
-        setQuotes(quotesData);
+        if (isMounted.current) setQuotes(quotesData);
       } else { 
-        setQuotes({}); 
+        if (isMounted.current) setQuotes({}); 
       }
       
-      setLastRefresh(new Date());
+      if (isMounted.current) setLastRefresh(new Date());
     } catch (err) { 
       console.error('Error fetching data:', err);
-      Alert.alert('Error', 'Failed to fetch data. Pull to refresh.');
+      if (isMounted.current) {
+        Alert.alert('Error', 'Failed to fetch data. Pull to refresh.');
+      }
     }
-    finally { setLoading(false); setRefreshing(false); }
-  }, [selectedPortfolio]);
+    finally { 
+      isFetching.current = false;
+      if (isMounted.current) {
+        setLoading(false); 
+        setRefreshing(false); 
+      }
+    }
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
 
   // Initial load
   useEffect(() => { 
     fetchPortfolios(); 
     fetchFxRates(); 
+    fetchData(true, 'all');
   }, []);
 
   // Fetch data when portfolio changes
   useEffect(() => { 
-    fetchData(); 
+    fetchData(true, selectedPortfolio); 
   }, [selectedPortfolio]);
 
-  // Refresh when screen comes into focus (e.g., after adding/editing)
+  // Refresh when screen comes into focus - FIXED: wait for animations to complete
   useFocusEffect(
     useCallback(() => {
-      fetchData(false);
-      fetchFxRates();
-    }, [selectedPortfolio])
+      // Wait for screen transition animation to complete before fetching
+      const task = InteractionManager.runAfterInteractions(() => {
+        console.log('[Dashboard] Screen focused - refreshing data');
+        fetchData(false);
+        fetchFxRates();
+      });
+      
+      return () => task.cancel();
+    }, [fetchData, fetchFxRates])
   );
 
   // Auto-refresh every 60 seconds
   useEffect(() => {
-    const interval = setInterval(() => fetchData(false), 60000);
+    const interval = setInterval(() => {
+      if (!isFetching.current) fetchData(false);
+    }, 60000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
@@ -177,78 +221,82 @@ export default function Dashboard() {
   
   const formatPct = (val: number) => `${val >= 0 ? '+' : ''}${val.toFixed(2)}%`;
 
-  // Calculate totals
-  const getTotalValue = useCallback(() => {
-    return holdings.reduce((sum, h) => {
+  // Calculate totals - using useMemo for performance
+  const { totalValue, totalCost, totalGain, totalGainPct, dayChange, dayChangePct } = useMemo(() => {
+    const tv = holdings.reduce((sum, h) => {
       const q = quotes[h.symbol];
       const price = q?.price || 0;
       const quoteCur = q?.quote_currency || h.currency || 'USD';
       return sum + convert(price * h.shares, quoteCur);
     }, 0);
-  }, [holdings, quotes, convert]);
 
-  const getTotalCost = useCallback(() => {
-    return holdings.reduce((sum, h) => {
+    const tc = holdings.reduce((sum, h) => {
       return sum + convert(h.avg_price * h.shares, h.currency || 'USD');
     }, 0);
-  }, [holdings, convert]);
 
-  const getTotalDayChange = useCallback(() => {
-    return holdings.reduce((sum, h) => {
+    const dc = holdings.reduce((sum, h) => {
       const q = quotes[h.symbol];
       if (!q || !q.price || !q.previous_close) return sum;
       const quoteCur = q.quote_currency || h.currency || 'USD';
       return sum + convert((q.price - q.previous_close) * h.shares, quoteCur);
     }, 0);
+
+    const tg = tv - tc;
+    const tgp = tc > 0 ? (tg / tc) * 100 : 0;
+    const dcp = tv - dc > 0 ? (dc / (tv - dc)) * 100 : 0;
+
+    return { 
+      totalValue: tv, 
+      totalCost: tc, 
+      totalGain: tg, 
+      totalGainPct: tgp, 
+      dayChange: dc, 
+      dayChangePct: dcp 
+    };
   }, [holdings, quotes, convert]);
 
-  const totalValue = getTotalValue();
-  const totalCost = getTotalCost();
-  const totalGain = totalValue - totalCost;
-  const totalGainPct = totalCost > 0 ? (totalGain / totalCost) * 100 : 0;
-  const dayChange = getTotalDayChange();
-  const dayChangePct = totalValue - dayChange > 0 ? (dayChange / (totalValue - dayChange)) * 100 : 0;
+  const getPortfolioName = useCallback((id: string) => portfolios.find((p) => p.id === id)?.name || '', [portfolios]);
 
-  const getPortfolioName = (id: string) => portfolios.find((p) => p.id === id)?.name || '';
+  // Get unique asset types for filter - memoized
+  const assetTypes = useMemo(() => [...new Set(holdings.map(h => h.asset_type || 'Stock'))], [holdings]);
 
-  // Get unique asset types for filter
-  const assetTypes = [...new Set(holdings.map(h => h.asset_type || 'Stock'))];
-
-  // Filter and sort holdings
-  const filteredHoldings = filterAssetType 
-    ? holdings.filter(h => h.asset_type === filterAssetType)
-    : holdings;
-
-  const sortedHoldings = [...filteredHoldings].sort((a, b) => {
-    const qa = quotes[a.symbol]; 
-    const qb = quotes[b.symbol];
-    let diff = 0;
+  // Filter and sort holdings - memoized for performance
+  const sortedHoldings = useMemo(() => {
+    const filtered = filterAssetType 
+      ? holdings.filter(h => h.asset_type === filterAssetType)
+      : holdings;
     
-    if (sortKey === 'symbol') {
-      diff = a.symbol.localeCompare(b.symbol);
-    } else if (sortKey === 'type') {
-      diff = (a.asset_type || 'Stock').localeCompare(b.asset_type || 'Stock');
-    } else if (sortKey === 'value') {
-      const va = convert((qa?.price || 0) * a.shares, qa?.quote_currency || a.currency || 'USD');
-      const vb = convert((qb?.price || 0) * b.shares, qb?.quote_currency || b.currency || 'USD');
-      diff = va - vb;
-    } else if (sortKey === 'day') {
-      const da = qa && qa.previous_close > 0 ? ((qa.price - qa.previous_close) / qa.previous_close) * 100 : 0;
-      const db = qb && qb.previous_close > 0 ? ((qb.price - qb.previous_close) / qb.previous_close) * 100 : 0;
-      diff = da - db;
-    } else if (sortKey === 'gain') {
-      const ga = convert((qa?.price || 0) * a.shares, qa?.quote_currency || a.currency || 'USD') - convert(a.avg_price * a.shares, a.currency || 'USD');
-      const gb = convert((qb?.price || 0) * b.shares, qb?.quote_currency || b.currency || 'USD') - convert(b.avg_price * b.shares, b.currency || 'USD');
-      diff = ga - gb;
-    } else if (sortKey === 'return') {
-      const costA = convert(a.avg_price * a.shares, a.currency || 'USD');
-      const costB = convert(b.avg_price * b.shares, b.currency || 'USD');
-      const ra = costA > 0 ? ((convert((qa?.price || 0) * a.shares, qa?.quote_currency || a.currency || 'USD') - costA) / costA) * 100 : 0;
-      const rb = costB > 0 ? ((convert((qb?.price || 0) * b.shares, qb?.quote_currency || b.currency || 'USD') - costB) / costB) * 100 : 0;
-      diff = ra - rb;
-    }
-    return sortAsc ? diff : -diff;
-  });
+    return [...filtered].sort((a, b) => {
+      const qa = quotes[a.symbol]; 
+      const qb = quotes[b.symbol];
+      let diff = 0;
+      
+      if (sortKey === 'symbol') {
+        diff = a.symbol.localeCompare(b.symbol);
+      } else if (sortKey === 'type') {
+        diff = (a.asset_type || 'Stock').localeCompare(b.asset_type || 'Stock');
+      } else if (sortKey === 'value') {
+        const va = convert((qa?.price || 0) * a.shares, qa?.quote_currency || a.currency || 'USD');
+        const vb = convert((qb?.price || 0) * b.shares, qb?.quote_currency || b.currency || 'USD');
+        diff = va - vb;
+      } else if (sortKey === 'day') {
+        const da = qa && qa.previous_close > 0 ? ((qa.price - qa.previous_close) / qa.previous_close) * 100 : 0;
+        const db = qb && qb.previous_close > 0 ? ((qb.price - qb.previous_close) / qb.previous_close) * 100 : 0;
+        diff = da - db;
+      } else if (sortKey === 'gain') {
+        const ga = convert((qa?.price || 0) * a.shares, qa?.quote_currency || a.currency || 'USD') - convert(a.avg_price * a.shares, a.currency || 'USD');
+        const gb = convert((qb?.price || 0) * b.shares, qb?.quote_currency || b.currency || 'USD') - convert(b.avg_price * b.shares, b.currency || 'USD');
+        diff = ga - gb;
+      } else if (sortKey === 'return') {
+        const costA = convert(a.avg_price * a.shares, a.currency || 'USD');
+        const costB = convert(b.avg_price * b.shares, b.currency || 'USD');
+        const ra = costA > 0 ? ((convert((qa?.price || 0) * a.shares, qa?.quote_currency || a.currency || 'USD') - costA) / costA) * 100 : 0;
+        const rb = costB > 0 ? ((convert((qb?.price || 0) * b.shares, qb?.quote_currency || b.currency || 'USD') - costB) / costB) * 100 : 0;
+        diff = ra - rb;
+      }
+      return sortAsc ? diff : -diff;
+    });
+  }, [holdings, quotes, filterAssetType, sortKey, sortAsc, convert]);
 
   const renderHolding = ({ item }: { item: Holding }) => {
     const q = quotes[item.symbol];
